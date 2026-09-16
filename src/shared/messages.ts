@@ -7,7 +7,8 @@ export type RuntimeRequest =
   | { type: 'route:get-state'; tabId?: number }
   | { type: 'route:update-settings'; settings: Partial<InspectorSettings> }
   | { type: 'route:clear' }
-  | { type: 'route:open-dashboard' };
+  | { type: 'route:open-dashboard' }
+  | { type: 'route:open-announcement' };
 
 export interface RuntimeResponse {
   ok: boolean;

@@ -28,8 +28,8 @@ export function showOperationError(error: unknown): void {
   element.textContent = message;
 }
 
-export async function getState(): Promise<InspectorState> {
-  const response = await send({ type: 'route:get-state' });
+export async function getState(tabId?: number): Promise<InspectorState> {
+  const response = await send({ type: 'route:get-state', ...(tabId !== undefined ? { tabId } : {}) });
   if (!response.ok || !response.state) throw new Error(response.error ?? 'Unable to read extension state.');
   return response.state;
 }

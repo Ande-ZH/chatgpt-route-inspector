@@ -170,6 +170,129 @@ test.afterAll(async () => {
   }
 });
 
+for (const scenario of ['reload', 'pointer-path', 'pointer-path-zh', 'pointer-path-narrow', 'english-layout']) {
+  test(`notice regression: ${scenario}`, async () => {
+    const settings = await context.newPage();
+    await settings.goto(`chrome-extension://${extensionId}/ui/options/index.html`);
+    await settings.evaluate(async ({ captureMode, uiLanguage }) => chrome.runtime.sendMessage({ type: 'route:update-settings', settings: {
+      uiLanguage, overlayEnabled: true, overlayMode: 'full', captureMode
+    } }), { captureMode: scenario === 'reload' ? 'reload' : 'live', uiLanguage: scenario.endsWith('-zh') ? 'zh' : 'en' });
+    const page = await context.newPage();
+    if (scenario.endsWith('-narrow')) await page.setViewportSize({ width: 375, height: 800 });
+    await page.goto('http://127.0.0.1:43996/c/notice-regression');
+    const overlay = page.locator('#chatgpt-route-inspector-root');
+    await expect(overlay.locator('.probe')).toBeVisible();
+    try {
+      if (scenario === 'reload') {
+        await expect(overlay.locator('#notice-star')).toHaveCount(0);
+        return;
+      }
+      const star = overlay.locator('#notice-star');
+      const link = overlay.locator('#notice-link');
+      if (scenario === 'english-layout') {
+        const label = overlay.locator('.notice-source-label');
+        const metrics = await label.evaluate((element) => {
+          const range = document.createRange();
+          range.selectNodeContents(element.firstChild!);
+          const textRects = [...range.getClientRects()].map((r) => ({ x: r.x, y: r.y, width: r.width, height: r.height }));
+          const labelRect = element.getBoundingClientRect();
+          const valueRect = element.nextElementSibling!.getBoundingClientRect();
+          return { textRects, overlap: labelRect.right > valueRect.left,
+            centerDelta: Math.abs(labelRect.y + labelRect.height / 2 - valueRect.y - valueRect.height / 2) };
+        });
+        expect(metrics.textRects).toHaveLength(1);
+        expect(metrics.overlap).toBe(false);
+        expect(metrics.centerDelta).toBeLessThan(1);
+        return;
+      }
+      await star.hover();
+      await expect(link).toBeVisible();
+      const start = (await star.boundingBox())!;
+      const end = (await link.locator('strong').boundingBox())!;
+      const from = { x: start.x + start.width / 2, y: start.y + start.height / 2 };
+      const to = { x: end.x + end.width / 2, y: end.y + end.height / 2 };
+      for (let step = 1; step <= 30; step++) {
+        await page.mouse.move(from.x + (to.x - from.x) * step / 30, from.y + (to.y - from.y) * step / 30);
+        expect(await link.isVisible(), `popover must stay open at pointer step ${step}`).toBe(true);
+      }
+      for (let step = 1; step <= 30; step++) {
+        await page.mouse.move(to.x + (from.x - to.x) * step / 30, to.y + (from.y - to.y) * step / 30);
+        expect(await link.isVisible(), `popover must stay open on return step ${step}`).toBe(true);
+      }
+      await page.mouse.move(0, 0);
+      await expect(link).not.toBeVisible();
+      await star.hover();
+      for (let step = 1; step <= 30; step++) {
+        await page.mouse.move(from.x + (to.x - from.x) * step / 30, from.y + (to.y - from.y) * step / 30);
+        expect(await link.isVisible()).toBe(true);
+      }
+      const opened = context.waitForEvent('page');
+      await page.mouse.click(to.x, to.y);
+      const notice = await opened;
+      await notice.waitForURL(`chrome-extension://${extensionId}/ui/announcement/index.html`);
+      await notice.close();
+      await star.press('Escape');
+      await expect(link).not.toBeVisible();
+    } finally {
+      await Promise.all([settings.close(), page.close()]);
+    }
+  });
+}
+
+test('opens the bilingual release notice from the hoverable response-source star', async () => {
+  const settings = await context.newPage();
+  await settings.goto(`chrome-extension://${extensionId}/ui/options/index.html`);
+  await settings.evaluate(async () => {
+    await chrome.runtime.sendMessage({ type: 'route:update-settings', settings: {
+      uiLanguage: 'zh', overlayEnabled: true, overlayMode: 'full', captureMode: 'live'
+    } });
+  });
+  const page = await context.newPage();
+  await page.goto('http://127.0.0.1:43996/c/notice-preview');
+  const overlay = page.locator('#chatgpt-route-inspector-root');
+  const star = overlay.locator('#notice-star');
+  const link = overlay.locator('#notice-link');
+  await expect(star).toBeVisible();
+  await expect(star).toHaveText('*');
+  await expect(star).toHaveCSS('font-family', 'Arial, sans-serif');
+  await expect(star).toHaveCSS('color', 'rgb(169, 240, 77)');
+  await expect(link).not.toBeVisible();
+  await star.hover();
+  await expect(link).toBeVisible();
+  await expect(link).toContainText('有限样本显示响应来源字段缺失 resolved_model_slug，则可能发生降级。 查看详情');
+  await link.hover();
+  await expect(link).toBeVisible();
+  await overlay.locator('.probe').screenshot({ path: path.join(root, 'output/playwright/notice-hint-107-zh.png') });
+  const opened = context.waitForEvent('page');
+  await link.click();
+  const notice = await opened;
+  await notice.waitForURL(`chrome-extension://${extensionId}/ui/announcement/index.html`);
+  await expect(notice.locator('html')).toHaveAttribute('lang', 'zh-CN');
+  await notice.getByRole('button', { name: 'EN', exact: true }).click();
+  await expect(notice.locator('#notice-title')).toHaveText('An observation about response routing fields');
+  await notice.getByRole('button', { name: '中', exact: true }).click();
+  await expect(notice.locator('#notice-title')).toHaveText('关于响应路由字段的一点观察');
+  expect(await notice.evaluate(async () => (await chrome.runtime.sendMessage({ type: 'route:get-state' })).state.settings.uiLanguage)).toBe('zh');
+  const closed = notice.waitForEvent('close');
+  await notice.locator('#notice-close').click();
+  await closed;
+  await star.focus();
+  await expect(link).toBeVisible();
+  await star.press('Escape');
+  await expect(link).not.toBeVisible();
+  await settings.evaluate(async () => chrome.runtime.sendMessage({ type: 'route:update-settings', settings: { uiLanguage: 'en' } }));
+  await star.hover();
+  await expect(link).toContainText('Limited samples suggest that a missing resolved_model_slug response field may indicate a model downgrade. View details');
+  await overlay.locator('.probe').screenshot({ path: path.join(root, 'output/playwright/notice-hint-107-en.png') });
+  await page.setViewportSize({ width: 375, height: 800 });
+  await star.hover();
+  await expect(link).toBeVisible();
+  const bounds = await link.boundingBox();
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(375);
+  await Promise.all([settings.close(), page.close()]);
+});
+
 test('keeps live and reload captures distinct and stores no chat text', async () => {
   const languageSetup = await context.newPage();
   await languageSetup.goto(`chrome-extension://${extensionId}/ui/popup/index.html`);
@@ -1493,6 +1616,116 @@ test('captures passive quota snapshots and displays four rows immediately above 
   await expect(dashboard.locator('#detail')).not.toContainText(/[\u4e00-\u9fff]/);
   await page.close();
   await dashboard.close();
+});
+
+test('retires the current route and badge when the same tab leaves the supported site', async () => {
+  const setup = await context.newPage();
+  await setup.goto(`chrome-extension://${extensionId}/ui/options/index.html`);
+  await setup.evaluate(async () => {
+    await chrome.runtime.sendMessage({ type: 'route:update-settings', settings: {
+      captureMode: 'live', uiLanguage: 'en', autoCaptureEnabled: true, overlayEnabled: true, overlayMode: 'full'
+    } });
+    await chrome.runtime.sendMessage({ type: 'route:clear' });
+  });
+  const page = await context.newPage();
+  const popup = await context.newPage();
+  try {
+    await page.goto('http://127.0.0.1:43996/c/site-exit');
+    const overlay = page.locator('#chatgpt-route-inspector-root');
+    await expect(overlay).toHaveCount(1);
+    const tabId = await worker.evaluate(async () => (await chrome.tabs.query({})).find((tab) => tab.url?.endsWith('/c/site-exit'))!.id!);
+    const current = () => worker.evaluate(async ({ key, tabId }) => (await chrome.storage.local.get(key))[key].captureContexts?.[tabId], { key: storageKey, tabId });
+    await expect.poll(current).toBeTruthy();
+    const originalId = (await current()).id;
+    const capture = async (captureId: string, captureContextId: string) => page.evaluate(({ captureId, captureContextId }) => {
+      window.postMessage({ source: 'chatgpt-route-inspector', version: 1, observation: {
+        captureId, captureContextId, source: 'page_fetch', captureMode: 'live', phase: 'completed',
+        observedAt: new Date().toISOString(), conversationId: 'site-exit', requestedModel: 'same-route', resolvedModelSlug: 'same-route'
+      } }, location.origin);
+    }, { captureId, captureContextId });
+    await capture('before-exit', originalId);
+    await expect(overlay).toContainText('same-route');
+    const badge = () => worker.evaluate((tabId) => chrome.action.getBadgeText({ tabId }), tabId);
+    await expect.poll(badge).toBe('OK');
+    await popup.goto(`chrome-extension://${extensionId}/ui/popup/index.html`);
+    await page.bringToFront();
+    await popup.reload();
+    await expect(popup.locator('.route-model strong')).toHaveText(['same-route', 'same-route']);
+    await page.goto('about:blank');
+    await expect.poll(badge).toBe('');
+    await popup.reload();
+    await expect(popup.locator('.route-model strong')).toHaveText(['—', '—']);
+    const count = () => worker.evaluate(async (key) => (await chrome.storage.local.get(key))[key].turns.length, storageKey);
+    expect(await count()).toBe(1);
+    await setup.evaluate(async () => chrome.runtime.sendMessage({ type: 'route:update-settings', settings: { uiLanguage: 'en' } }));
+    await expect.poll(badge).toBe('');
+    await page.goto('http://127.0.0.1:43996/c/site-exit');
+    await expect(overlay).toHaveCount(1);
+    await expect.poll(async () => (await current())?.id).not.toBe(originalId);
+    await popup.reload();
+    await expect(popup.locator('.route-model strong')).toHaveText(['—', '—']);
+    await capture('after-return', (await current()).id);
+    await expect(overlay).toContainText('same-route');
+    await expect.poll(badge).toBe('OK');
+    await expect(popup.locator('.route-model strong')).toHaveText(['same-route', 'same-route']);
+    expect(await count()).toBe(2);
+  } finally { await Promise.all([page.close(), popup.close(), setup.close()]); }
+});
+
+test('keeps normal and 256-character model fields inside full and compact overlays', async () => {
+  const options = await context.newPage();
+  await options.goto(`chrome-extension://${extensionId}/ui/options/index.html`);
+  await options.evaluate(async () => {
+    await chrome.runtime.sendMessage({ type: 'route:update-settings', settings: {
+      captureMode: 'live', uiLanguage: 'en', overlayEnabled: true, overlayMode: 'full', autoCaptureEnabled: true
+    } });
+    await chrome.runtime.sendMessage({ type: 'route:clear' });
+  });
+  const page = await context.newPage();
+  try {
+    await page.goto('http://127.0.0.1:43996/c/layout-regression');
+    const overlay = page.locator('#chatgpt-route-inspector-root');
+    await expect(overlay).toHaveCount(1);
+    const getContextId = () => worker.evaluate(async (key) => {
+      const state = (await chrome.storage.local.get(key))[key];
+      return (Object.values(state.captureContexts ?? {}) as Array<{ id: string; pageUrl: string }>)
+        .find((entry) => entry.pageUrl.endsWith('/c/layout-regression'))?.id;
+    }, storageKey);
+    await expect.poll(getContextId).toBeTruthy();
+    const captureContextId = await getContextId();
+    for (const language of ['en', 'zh']) {
+      for (const mode of ['full', 'compact']) {
+        await options.evaluate(async ({ mode, language }) => chrome.runtime.sendMessage({
+          type: 'route:update-settings', settings: { overlayMode: mode, uiLanguage: language }
+        }), { mode, language });
+        for (const width of [1200, 360, 280]) {
+          await page.setViewportSize({ width, height: 900 });
+          for (const length of [16, 196, 256]) {
+            const model = 'gpt-' + 'a'.repeat(length - 4);
+            await page.evaluate(({ captureContextId, model }) => {
+              const now = new Date().toISOString();
+              window.postMessage({ source: 'chatgpt-route-inspector', version: 1, observation: {
+                captureId: 'layout-capture', captureContextId, captureMode: 'live', source: 'page_fetch',
+                phase: 'completed', observedAt: now, startedAt: now, conversationId: 'layout-regression',
+                requestedModel: model, resolvedModelSlug: model
+              } }, location.origin);
+            }, { captureContextId, model });
+            await expect(overlay.locator('.model b')).toHaveText([model, model]);
+            await expect.poll(() => overlay.locator('.route').evaluate((route) => {
+              const box = route.getBoundingClientRect();
+              return route.scrollWidth <= route.clientWidth + 1 &&
+                [...route.querySelectorAll('.model')].every((model) => {
+                  const child = model.getBoundingClientRect();
+                  return child.left >= box.left && child.right <= box.right;
+                });
+            }), { message: `${language}/${mode}/${width}px/${length} characters` }).toBe(true);
+          }
+        }
+      }
+    }
+  } finally {
+    await Promise.all([page.close(), options.close()]);
+  }
 });
 
 test('rejects stale UI snapshots, keeps overlay nodes stable, and blocks post-clear resurrection', async () => {

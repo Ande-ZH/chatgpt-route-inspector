@@ -15,6 +15,21 @@ const mismatch = createTurn({
 });
 
 describe('UI translations', () => {
+  it('provides complete Chinese and English copy for the upgrade announcement', () => {
+    const html = readFileSync(new URL('../../src/ui/announcement/index.html', import.meta.url), 'utf8');
+    const keys = [...html.matchAll(/data-i18n(?:-aria-label|-title)?="([^"]+)"/g)].map((match) => match[1]!);
+    expect(keys.length).toBeGreaterThan(10);
+    for (const key of keys) {
+      expect(TRANSLATION_KEYS).toContain(key);
+      const translatedKey = key as (typeof TRANSLATION_KEYS)[number];
+      expect(t('zh', translatedKey)).not.toBe(key);
+      expect(t('en', translatedKey)).not.toBe(key);
+      expect(t('en', translatedKey)).not.toMatch(/[\u4e00-\u9fff]/);
+    }
+    expect(t('zh', 'notice.invitation')).toContain('如果你愿意');
+    expect(t('en', 'notice.invitation')).toContain('If you would like to contribute');
+  });
+
   it('renders auto reasoning as its own bilingual status and reason', () => {
     for (const model of ['gpt-5-6-auto-thinking', 'gpt-5-5-auto-thinking']) {
       const automatic = createTurn({

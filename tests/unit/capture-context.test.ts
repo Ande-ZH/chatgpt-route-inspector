@@ -57,6 +57,26 @@ it('prefers the actual reload response over a later DOM fallback without merging
   expect(record.sources).toEqual(['conversation_record']);
 });
 
+it.each([true, false])('keeps explicit network conflict ahead of DOM (conflict=%s)', (conflict) => {
+  const { data, observation } = state();
+  const record = createTurn({ ...observation, source: 'conversation_record', captureMode: 'reload',
+    resolvedModelSlug: 'gpt-5-6-thinking', serverModelSlug: conflict ? 'gpt-5-4-thinking' : 'gpt-5-6-thinking' });
+  const dom = createTurn({ ...observation, captureId: 'dom', source: 'assistant_dom', captureMode: 'reload',
+    resolvedModelSlug: null, domModelSlug: 'gpt-5-6-thinking' });
+  data.turns = [dom, record];
+  expect(latestInContext(data, 1, 'reload')).toBe(record);
+  if (conflict) expect(record.verdict).toBe('conflict');
+});
+
+it('still permits DOM fallback when the network record has no response evidence', () => {
+  const { data, observation } = state();
+  const record = createTurn({ ...observation, source: 'conversation_record', captureMode: 'reload', resolvedModelSlug: null });
+  const dom = createTurn({ ...observation, captureId: 'dom', source: 'assistant_dom', captureMode: 'reload',
+    resolvedModelSlug: null, domModelSlug: 'dom-route' });
+  data.turns = [dom, record];
+  expect(latestInContext(data, 1, 'reload')).toBe(dom);
+});
+
 it.each(['before', 'after'])('preserves first-message capture when the new conversation URL arrives %s response metadata', (order) => {
   const tracker = new CaptureContextTracker('https://chatgpt.com/');
   const initial = tracker.startLive();

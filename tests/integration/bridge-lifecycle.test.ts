@@ -5,10 +5,10 @@ import { createTurn } from '../../src/core/turns';
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.resetModules(); });
 
-async function bridge(failInitialState: false | 'throw' | 'reject' | 'missing-tab' = false) {
+async function bridge(failInitialState: false | 'throw' | 'reject' | 'missing-tab' = false, enabled = true) {
   vi.useFakeTimers();
   const listeners = new Map<string, (event: unknown) => void>();
-  let state: InspectorState = { settings: { ...DEFAULT_SETTINGS, overlayEnabled: false }, turns: [], powReadings: [],
+  let state: InspectorState = { settings: { ...DEFAULT_SETTINGS, overlayEnabled: false, autoCaptureEnabled: enabled }, turns: [], powReadings: [],
     parserHealth: { lastSuccessAt: null, lastFailureAt: null, consecutiveFailures: 0 } };
   const nodes = [{ isConnected: true, getAttribute: (key: string) => ({
     'data-message-id': 'old-message', 'data-message-model-slug': 'old-dom'
@@ -36,6 +36,19 @@ async function bridge(failInitialState: false | 'throw' | 'reject' | 'missing-ta
     pageUrl: 'https://chatgpt.com/c/a', revision: 0, reloadEligible: true };
   return {
     send, context, nodes, root, mutate: () => mutation([], {} as MutationObserver),
+    observe: () => listeners.get('message')?.({ source: windowMock, origin: 'https://chatgpt.com', data: {
+      source: 'chatgpt-route-inspector', version: 1, observation: {
+        captureId: 'startup', source: 'page_fetch', captureMode: 'live', phase: 'completed',
+        observedAt: new Date().toISOString(), resolvedModelSlug: 'startup-route'
+      }
+    } }),
+    networkConflict: () => {
+      state = { ...state, turns: [createTurn({ captureId: 'network', captureContextId: context.id,
+        tabId: 1, conversationId: 'a', source: 'conversation_record', captureMode: 'reload', phase: 'completed',
+        observedAt: new Date().toISOString(), resolvedModelSlug: 'gpt-5-6-thinking', serverModelSlug: 'gpt-5-4-thinking'
+      })] };
+      stateListener({ type: 'route:state-changed', state });
+    },
     showLive: () => {
       state = { ...state, settings: { ...state.settings, overlayEnabled: true }, turns: [createTurn({
         captureId: 'live', captureContextId: context.id, tabId: 1, source: 'page_fetch', captureMode: 'live',
@@ -53,6 +66,56 @@ async function bridge(failInitialState: false | 'throw' | 'reject' | 'missing-ta
     contexts: () => send.mock.calls.filter(([request]) => request.type === 'route:context')
   };
 }
+
+it.each([false, true])('A2: waits for a successful handshake before forwarding (enabled=%s)', async (enabled) => {
+  const capture = await bridge('throw', enabled);
+  capture.observe();
+  await vi.advanceTimersByTimeAsync(100);
+  expect(capture.records()).toHaveLength(0);
+  await vi.advanceTimersByTimeAsync(200);
+  expect(capture.records()).toHaveLength(enabled ? 1 : 0);
+});
+
+it('A2: observations received during a known pause are not replayed after resume', async () => {
+  const capture = await bridge('throw', false);
+  capture.update({ autoCaptureEnabled: false });
+  capture.observe();
+  capture.update({ autoCaptureEnabled: true });
+  await vi.advanceTimersByTimeAsync(300);
+  expect(capture.records()).toHaveLength(0);
+  capture.observe();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(capture.records()).toHaveLength(1);
+});
+
+it('A2: a pause invalidates startup observations even if resumed before initialization finishes', async () => {
+  const capture = await bridge('throw');
+  capture.observe();
+  capture.update({ autoCaptureEnabled: false });
+  capture.update({ autoCaptureEnabled: true });
+  await vi.advanceTimersByTimeAsync(300);
+  expect(capture.records()).toHaveLength(0);
+});
+
+it('A2: startup observations are bounded while waiting for initialization', async () => {
+  const capture = await bridge('throw');
+  for (let index = 0; index < 200; index++) capture.observe();
+  await vi.advanceTimersByTimeAsync(100);
+  expect(capture.records()).toHaveLength(0);
+  await vi.advanceTimersByTimeAsync(200);
+  expect(capture.records()).toHaveLength(128);
+  capture.observe();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(capture.records()).toHaveLength(129);
+});
+
+it('A3: an explicit network conflict stops DOM fallback even without a model label', async () => {
+  const capture = await bridge();
+  capture.receive(capture.context);
+  capture.networkConflict();
+  await vi.advanceTimersByTimeAsync(1300);
+  expect(capture.records()).toHaveLength(0);
+});
 
 it.each(['throw', 'reject', 'missing-tab'] as const)('N5: recovers the overlay after initial handshake %s', async (failure) => {
   const capture = await bridge(failure);

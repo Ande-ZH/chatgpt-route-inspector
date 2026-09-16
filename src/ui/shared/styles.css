@@ -197,3 +197,17 @@ html[lang="en"] .mode-selector button { font-size:12px; }
 html[lang="en"] .popup-shell .route-model strong { height:21px; white-space:nowrap; font-size:18px; line-height:21px; }
 @media(max-width:620px){.shell,.onboarding{width:calc(100% - 24px)}.masthead,.onboarding-hero{padding:18px}.form-grid,.principles{grid-template-columns:1fr}.readout-grid{grid-template-columns:1fr}.page-title h2{font-size:42px}.masthead{align-items:flex-start;gap:10px}.brand{gap:9px}.brand-mark{width:29px;height:29px}.brand h1{font-size:16px}.brand p{font-size:10px}.author-link{font-size:10px}.signal-pill{font-size:10px;padding:5px 7px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{transition-duration:.01ms!important;animation-duration:.01ms!important}}
+
+.announcement { width:min(820px,calc(100% - 32px)); margin:40px auto; border:1px solid var(--line); background:var(--panel-deep); box-shadow:var(--shadow); }
+.announcement-masthead { padding:20px 32px; }
+.announcement-body { padding:34px 40px 30px; }
+.announcement-body h2 { margin:20px 0 28px; font:700 clamp(27px,4vw,38px)/1.35 var(--display); letter-spacing:-.025em; }
+.announcement-body h3 { margin:30px 0 12px; font:700 20px/1.5 var(--display); }
+.announcement-body p { margin:0 0 18px; font-size:16px; line-height:1.95; }
+.announcement-observation { padding-left:20px; border-left:3px solid var(--cyan); }
+.announcement-observation code { color:var(--cyan); font:14px/1.8 var(--mono); overflow-wrap:anywhere; }
+.announcement-body .announcement-caveat { color:var(--muted); font-size:14px; line-height:1.8; }
+.announcement-actions { display:flex; flex-wrap:wrap; gap:12px; margin:28px 0 15px; }
+.announcement-actions .button { display:inline-flex; align-items:center; justify-content:center; min-height:44px; padding:11px 18px; font-size:14px; text-decoration:none; }
+.announcement-body .announcement-footnote { margin:0; color:var(--muted); font-size:12px; line-height:1.8; }
+@media(max-width:620px){.announcement{margin:16px auto}.announcement-masthead{padding:18px}.announcement-body{padding:24px 20px}.announcement-body p{font-size:15px}.announcement-observation{padding-left:14px}.announcement-actions .button{flex:1 1 auto}.announcement-masthead .brand h1{font-size:15px}}

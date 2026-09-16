@@ -1,13 +1,31 @@
-import { clearState, mutateState, readState, storeObservation, storePowObservation, storeCaptureContext } from './storage';
+import { clearState, invalidateCaptureContext, mutateState, readState, storeObservation, storePowObservation, storeCaptureContext } from './storage';
+import { displayTabId, supportedPageUrl } from '../core/page-scope';
 import { latestInContext, normalizeCaptureContext } from '../core/capture-context';
 import { stateForTab } from '../core/state';
 import { normalizeUiLanguage } from '../core/language';
 import { normalizeObservation } from '../core/observation';
 import type { InspectorState, PowObservation, RouteObservation } from '../core/types';
 import type { RuntimeRequest, RuntimeResponse } from '../shared/messages';
+import { handleInstallation } from './upgrade-notice';
+import { UPGRADE_NOTICE_PAGE, UPGRADE_NOTICE_VERSION } from '../shared/upgrade-notice';
 
 const allowedOrigins = new Set(__ROUTE_INSPECTOR_ALLOWED_ORIGINS__);
 const badgeTexts = new Map<number, string>();
+
+async function currentTabPage(tabId: number): Promise<string | null> {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    return supportedPageUrl(tab.url, allowedOrigins);
+  } catch { return null; }
+}
+
+async function retireOffsiteContext(tabId: number): Promise<InspectorState> {
+  // Bind before the asynchronous browser query: its reply may outlive this visit.
+  const before = await readState();
+  const expectedId = before.captureContexts?.[tabId]?.id;
+  if (await currentTabPage(tabId) === null) return invalidateCaptureContext(tabId, expectedId);
+  return readState();
+}
 
 async function updateBadge(tabId: number | undefined, state: InspectorState): Promise<void> {
   if (tabId === undefined) return;
@@ -40,14 +58,18 @@ async function broadcast(state: InspectorState): Promise<void> {
     const openIds = new Set(tabs.map((tab) => tab.id));
     for (const tabId of badgeTexts.keys()) if (!openIds.has(tabId)) badgeTexts.delete(tabId);
     await Promise.allSettled(tabs.map(async (tab) => {
-      if (tab.id === undefined || !tab.url) return;
-      try {
-        if (!allowedOrigins.has(new URL(tab.url).origin)) return;
-      } catch {
+      if (tab.id === undefined) return;
+      if (!supportedPageUrl(tab.url, allowedOrigins)) {
+        if (state.captureContexts?.[tab.id] && !state.captureContexts[tab.id]!.invalidated) {
+          const invalidated = await invalidateCaptureContext(tab.id, state.captureContexts[tab.id]!.id);
+          // Queue, do not await our own publication queue from inside a broadcast.
+          void publish(invalidated).catch((error: unknown) => console.error('Could not publish retired tab context.', error));
+        }
+        await updateBadge(tab.id, { ...state, captureContexts: {} });
         return;
       }
       await Promise.allSettled([
-        updateBadge(tab.id, state),
+        updateBadge(tab.id, displayTabId(state, tab, allowedOrigins) === undefined ? { ...state, captureContexts: {} } : state),
         chrome.tabs.sendMessage(tab.id, { ...message, state: stateForTab(state, tab.id) })
       ]);
     }));
@@ -68,6 +90,19 @@ function publish(state: InspectorState): Promise<void> {
   return operation;
 }
 
+function refreshTabBadge(tabId: number): Promise<void> {
+  // Navigation can change display eligibility without changing stored state.
+  // Share the publication queue so an older broadcast cannot overwrite this refresh.
+  const operation = publication.then(async () => {
+    const tab = await chrome.tabs.get(tabId);
+    const state = await readState();
+    await updateBadge(tabId, displayTabId(state, tab, allowedOrigins) === undefined
+      ? { ...state, captureContexts: {} } : state);
+  });
+  publication = operation.catch(() => undefined);
+  return operation;
+}
+
 async function acceptObservation(observation: RouteObservation): Promise<InspectorState> {
   const normalized = normalizeObservation(observation);
   if (!normalized) throw new Error('无效的路由观察记录。');
@@ -83,7 +118,7 @@ async function acceptPowObservation(observation: PowObservation): Promise<Inspec
 }
 
 chrome.runtime.onInstalled.addListener((details) => {
-  if (details.reason === 'install') void chrome.tabs.create({ url: chrome.runtime.getURL('ui/onboarding/index.html') });
+  void handleInstallation(details).catch((error: unknown) => console.error('Unable to open the extension welcome or update page.', error));
 });
 
 chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse: (response: RuntimeResponse) => void) => {
@@ -99,7 +134,14 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse: (respo
       if (contentTabId === undefined || !context || new URL(context.pageUrl).origin !== new URL(sender.url!).origin) {
         return { ok: false, error: 'Invalid capture context.' };
       }
+      if (await currentTabPage(contentTabId) !== context.pageUrl) {
+        return { ok: false, error: 'Capture context does not belong to the current page.' };
+      }
       const state = await storeCaptureContext(contentTabId, context);
+      const accepted = state.captureContexts?.[contentTabId];
+      if (!accepted || accepted.invalidated || accepted.id !== context.id || accepted.documentId !== context.documentId) {
+        return { ok: false, error: 'Capture context is no longer current.' };
+      }
       await publish(state);
       return { ok: true, state };
     }
@@ -116,6 +158,7 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse: (respo
       return { ok: true, state: await acceptPowObservation(observation) };
     }
     if (request.type === 'route:get-state') {
+      if (Number.isInteger(request.tabId)) await publish(await retireOffsiteContext(request.tabId!));
       const state = await readState();
       return sender.tab?.id === undefined ? { ok: true, state } : { ok: true, state, tabId: sender.tab.id };
     }
@@ -137,6 +180,13 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse: (respo
       await chrome.tabs.create({ url: chrome.runtime.getURL('ui/dashboard/index.html') });
       return { ok: true };
     }
+    if (request.type === 'route:open-announcement') {
+      if (chrome.runtime.getManifest().version !== UPGRADE_NOTICE_VERSION) {
+        return { ok: false, error: 'This version notice is no longer available.' };
+      }
+      await chrome.tabs.create({ url: chrome.runtime.getURL(UPGRADE_NOTICE_PAGE) });
+      return { ok: true };
+    }
     return { ok: false, error: '未知请求。' };
   })().then((response) => sendResponse(response.state && contentTabId !== undefined
     ? { ...response, state: stateForTab(response.state, contentTabId) } : response)).catch((error: unknown) => sendResponse({
@@ -144,6 +194,17 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse: (respo
     error: error instanceof Error ? error.message : '扩展内部错误。'
   }));
   return true;
+});
+
+chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
+  if (change.url === undefined && change.status === undefined) return;
+  if (supportedPageUrl(tab.url, allowedOrigins)) {
+    void refreshTabBadge(tabId).catch((error: unknown) => console.error('Could not refresh navigation badge.', error));
+    return;
+  }
+  // Recheck event snapshots and use the same identity-bound invalidation as reads.
+  void retireOffsiteContext(tabId).then(publish)
+    .catch((error: unknown) => console.error('Could not retire navigation context.', error));
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {

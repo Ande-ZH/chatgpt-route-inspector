@@ -124,6 +124,8 @@ export interface PowReading {
 }
 
 export interface CaptureContext {
+  /** Background-only tombstone: leaving a supported site retires this document. */
+  invalidated?: boolean;
   id: string;
   documentId: string;
   documentStartedAt: number;

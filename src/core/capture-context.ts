@@ -90,10 +90,15 @@ export class CaptureContextTracker {
   snapshot(): CaptureContext { return { ...this.current }; }
 }
 
+/** Conflicting raw route fields are still evidence even when no unique model can be selected. */
+export function hasResponseEvidence(turn: RouteTurn): boolean {
+  return Boolean(turn.resolvedModelSlug || turn.serverModelSlug || turn.routeModel || turn.modelLabel || turn.modelLabelConflict);
+}
+
 export function latestInContext(state: InspectorState, tabId: number | undefined, mode: CaptureMode): RouteTurn | null {
   if (tabId === undefined) return null;
   const context = state.captureContexts?.[tabId];
-  if (!context) return null;
+  if (!context || context.invalidated) return null;
   const conversation = contextConversation(context);
   const candidates = state.turns.filter((turn) => turn.tabId === tabId && turn.captureMode === mode &&
     turn.captureContextId === context.id &&
@@ -101,7 +106,7 @@ export function latestInContext(state: InspectorState, tabId: number | undefined
     (mode !== 'reload' || Boolean(conversation) && turn.conversationId === conversation));
   if (mode === 'reload') {
     const record = candidates.find((turn) => turn.sources.includes('conversation_record') &&
-      Boolean(turn.routeModel || turn.modelLabel || turn.modelLabelConflict));
+      hasResponseEvidence(turn));
     if (record) return record;
   }
   return candidates[0] ?? null;
@@ -119,12 +124,14 @@ export function normalizeCaptureContext(value: unknown): CaptureContext | null {
     const url = new URL(v.pageUrl);
     if (!['http:', 'https:'].includes(url.protocol)) return null;
     return { id: v.id, documentId: v.documentId, documentStartedAt: v.documentStartedAt,
+      ...(v.invalidated === true ? { invalidated: true } : {}),
       ...(v.visitStartedAt !== undefined ? { visitStartedAt: v.visitStartedAt } : {}),
       revision: v.revision, reloadEligible: v.reloadEligible, pageUrl: `${url.origin}${url.pathname}` };
   } catch { return null; }
 }
 
 export function newerContext(current: CaptureContext | undefined, incoming: CaptureContext): boolean {
+  if (current?.invalidated && current.documentId === incoming.documentId) return false;
   return !current || (current.documentId === incoming.documentId
     ? incoming.revision > current.revision
     : incoming.documentStartedAt > current.documentStartedAt);

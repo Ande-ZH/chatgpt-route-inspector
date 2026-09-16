@@ -79,8 +79,17 @@ export function storeCaptureContext(tabId: number, context: CaptureContext): Pro
   });
 }
 
+export function invalidateCaptureContext(tabId: number, expectedId: string | undefined): Promise<InspectorState> {
+  return mutateState((state) => {
+    const context = state.captureContexts?.[tabId];
+    if (!expectedId || !context || context.invalidated || context.id !== expectedId) return state;
+    // Retain document identity to reject delayed handshakes, including after worker restart.
+    return { ...state, captureContexts: { ...state.captureContexts, [tabId]: { ...context, invalidated: true } } };
+  });
+}
+
 export function storePowObservation(observation: PowObservation): Promise<InspectorState> {
-  return mutateState((state) => isCleared(state, observation.startedAt ?? observation.observedAt) ? state : ({
+  return mutateState((state) => !state.settings.autoCaptureEnabled || isCleared(state, observation.startedAt ?? observation.observedAt) ? state : ({
     ...state,
     powReadings: upsertPowReading(state.powReadings, observation)
   }));
@@ -102,7 +111,7 @@ export function mutateState(mutator: (state: InspectorState) => InspectorState |
 
 export function storeObservation(observation: RouteObservation): Promise<InspectorState> {
   return mutateState((state) => {
-    if (isCleared(state, observation.startedAt ?? observation.observedAt)) return state;
+    if (!state.settings.autoCaptureEnabled || isCleared(state, observation.startedAt ?? observation.observedAt)) return state;
     const turns = upsertTurn(state.turns, observation).slice(0, state.settings.retentionLimit);
     const previous = state.turns.find((turn) => turn.captureId === observation.captureId &&
       turn.tabId === (observation.tabId ?? null) && turn.captureMode === observation.captureMode &&

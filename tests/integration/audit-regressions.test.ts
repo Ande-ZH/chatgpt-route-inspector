@@ -15,6 +15,25 @@ const observation: RouteObservation = {
 afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); });
 
 describe('audit regressions', () => {
+  it('A2: enforces pause inside the storage queue for both route and PoW observations', async () => {
+    const disk: Record<string, unknown> = {};
+    vi.stubGlobal('chrome', { i18n: { getUILanguage: () => 'en' }, storage: { local: {
+      get: vi.fn(async () => structuredClone(disk)),
+      set: vi.fn(async (next) => { Object.assign(disk, structuredClone(next)); })
+    } } });
+    const storage = await import('../../src/background/storage');
+    const pausing = storage.mutateState((state) => ({ ...state, settings: { ...state.settings, autoCaptureEnabled: false } }));
+    const route = storage.storeObservation(observation);
+    const pow = storage.storePowObservation({ rawHex: '071a20', observedAt: observation.observedAt, tabId: 1 });
+    const [paused, routeResult, powResult] = await Promise.all([pausing, route, pow]);
+    expect(routeResult).toBe(paused);
+    expect(powResult).toBe(paused);
+    expect((await storage.readState()).turns).toEqual([]);
+    expect((await storage.readState()).powReadings).toEqual([]);
+    await storage.mutateState((state) => ({ ...state, settings: { ...state.settings, autoCaptureEnabled: true } }));
+    expect((await storage.storeObservation(observation)).turns).toHaveLength(1);
+    expect((await storage.storePowObservation({ rawHex: '071a20', observedAt: observation.observedAt, tabId: 1 })).powReadings).toHaveLength(1);
+  });
   it('keeps matching request and capture identifiers isolated by tab', () => {
     const initial = [createTurn(observation)];
     expect(upsertTurn(initial, { ...observation, tabId: 2 })).toHaveLength(2);
@@ -60,7 +79,7 @@ describe('audit regressions', () => {
         clear: vi.fn(async () => { for (const key of Object.keys(disk)) delete disk[key]; })
       } },
       action: { setBadgeText: vi.fn(), setBadgeBackgroundColor: vi.fn() },
-      tabs: { query: vi.fn(async () => []), sendMessage: vi.fn(), onRemoved: { addListener: vi.fn() } },
+      tabs: { query: vi.fn(async () => []), sendMessage: vi.fn(), onRemoved: { addListener: vi.fn() }, onUpdated: { addListener: vi.fn() } },
       runtime: {
         onInstalled: { addListener: vi.fn() }, sendMessage: vi.fn(),
         onMessage: { addListener: vi.fn((handler) => { listener = handler; }) }
