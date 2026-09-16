@@ -1,4 +1,5 @@
-import type { CaptureMode, InspectorState, RouteTurn, UiLanguage } from '../core/types';
+import type { CaptureContext, CaptureMode, InspectorState, RouteTurn, UiLanguage } from '../core/types';
+import { latestInContext, newerContext, normalizeCaptureContext } from '../core/capture-context';
 import { conversationIdFromPathname } from '../core/chatgpt-path';
 import { isStaleState } from '../core/state';
 import { isPageBridgeEnvelope, type RuntimeRequest, type RuntimeResponse } from '../shared/messages';
@@ -11,16 +12,17 @@ let host: HTMLElement | null = null;
 let ownTabId: number | null = null;
 let scanTimer: number | null = null;
 let scanRunning = false;
-let reloadScanEnabledForDocument = false;
-const documentStartedAtMs = Date.now();
+let captureContext: CaptureContext | null = null;
 const DOM_FALLBACK_DELAY_MS = 1200;
 const seenDomRoutes = new Set<string>();
 let domPathname = location.pathname;
-const nodeIdentities = new WeakMap<HTMLElement, { pathname: string; messageId: string | null }>();
+const nodeIdentities = new WeakMap<HTMLElement, {
+  pathname: string; messageId: string | null; contextId: string | null; observedAt: number; blocked: boolean;
+}>();
 const domSelector = '[data-message-author-role="assistant"][data-message-model-slug]';
 let renderedSignature = '';
 
-function trackDomNodes(): HTMLElement[] {
+function trackDomNodes(blocked = state?.settings.autoCaptureEnabled === false): HTMLElement[] {
   if (domPathname !== location.pathname) {
     domPathname = location.pathname;
     seenDomRoutes.clear();
@@ -29,9 +31,15 @@ function trackDomNodes(): HTMLElement[] {
   for (const node of nodes) {
     const identity = nodeIdentities.get(node);
     const messageId = node.getAttribute('data-message-id');
-    if (!identity || (messageId !== null && messageId !== identity.messageId)) {
-      nodeIdentities.set(node, { pathname: domPathname, messageId });
+    if (!identity || identity.contextId === null || (messageId !== null && messageId !== identity.messageId)) {
+      // SPA DOM mutations can precede delivery of the MAIN-world context message.
+      // Leave new nodes unbound until the context for their actual URL arrives.
+      const contextId = captureContext?.pageUrl === `${location.origin}${domPathname}` ? captureContext.id : null;
+      nodeIdentities.set(node, { pathname: domPathname, messageId, contextId,
+        observedAt: identity?.messageId === messageId ? identity.observedAt : Date.now(),
+        blocked: blocked || Boolean(identity?.messageId === messageId && identity.blocked) });
     }
+    if (blocked) nodeIdentities.get(node)!.blocked = true;
   }
   return nodes;
 }
@@ -49,11 +57,13 @@ function publishCaptureControl(): void {
 
 function acceptState(next: InspectorState): boolean {
   if (isStaleState(state, next)) return false;
-  if (!state) reloadScanEnabledForDocument = next.settings.captureMode === 'reload';
-  else if (state.settings.captureMode !== next.settings.captureMode) reloadScanEnabledForDocument = false;
+  // Stamp nodes while the old paused state still applies, including mutations queued at resume.
+  if (!next.settings.autoCaptureEnabled || state?.settings.autoCaptureEnabled === false) trackDomNodes(true);
   if (state?.clearedAt !== next.clearedAt) {
     seenDomRoutes.clear();
-    if (next.clearedAt) reloadScanEnabledForDocument = false;
+    if (next.clearedAt && captureContext && Date.parse(next.clearedAt) >= (captureContext.visitStartedAt ?? captureContext.documentStartedAt)) {
+      captureContext = { ...captureContext, reloadEligible: false };
+    }
   }
   state = next;
   publishCaptureControl();
@@ -62,31 +72,59 @@ function acceptState(next: InspectorState): boolean {
   return true;
 }
 
-const stateReady = chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({ type: 'route:get-state' })
-  .then((response) => {
-    ownTabId = response.tabId ?? null;
-    if (response.ok && response.state) acceptState(response.state);
-  })
-  .catch(() => undefined);
+let stateRetryDelay = 250;
+async function initializeState(): Promise<void> {
+  try {
+    const response = await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({ type: 'route:get-state' });
+    if (response.ok && response.state && Number.isInteger(response.tabId)) {
+      ownTabId = response.tabId!;
+      acceptState(response.state);
+      render();
+      return;
+    }
+  } catch {
+    // Worker startup failure must not permanently leave the overlay without a tab scope.
+  }
+  window.setTimeout(() => void initializeState(), stateRetryDelay);
+  stateRetryDelay = Math.min(stateRetryDelay * 2, 5000);
+}
+const stateReady = initializeState();
+
+let pendingContext: CaptureContext | null = null;
+let contextSyncRunning = false;
+let contextRetryScheduled = false;
+let contextRetryDelay = 250;
+
+async function syncContext(): Promise<void> {
+  if (contextSyncRunning || !pendingContext) return;
+  contextSyncRunning = true;
+  await stateReady;
+  const next = pendingContext;
+  try {
+    const response = await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({ type: 'route:context', context: next });
+    if (response.ok) {
+      if (pendingContext === next) pendingContext = null;
+      contextRetryDelay = 250;
+      if (response.state) acceptState(response.state);
+    }
+  } catch {
+    // Retain the latest context until the background worker acknowledges it.
+  } finally {
+    contextSyncRunning = false;
+    if (pendingContext && !contextRetryScheduled) {
+      contextRetryScheduled = true;
+      window.setTimeout(() => {
+        contextRetryScheduled = false;
+        void syncContext();
+      }, contextRetryDelay);
+      contextRetryDelay = Math.min(contextRetryDelay * 2, 5000);
+    }
+  }
+}
 
 function currentTurn(): RouteTurn | null {
-  if (!state) return null;
-  const mode = state.settings.captureMode;
-  const conversationId = mode === 'reload' ? conversationIdFromPath() : null;
-  if (mode === 'reload' && !conversationId) return null;
-  if (ownTabId !== null) {
-    return state.turns.find((turn) =>
-      turn.tabId === ownTabId &&
-      turn.captureMode === mode &&
-      (mode !== 'reload' || turn.conversationId === conversationId)
-    ) ?? null;
-  }
-  return state.turns.find((turn) =>
-    turn.tabId === null &&
-    turn.captureMode === mode &&
-    turn.pageUrl?.startsWith(location.origin) &&
-    (mode !== 'reload' || turn.conversationId === conversationId)
-  ) ?? null;
+  if (!state || !captureContext || ownTabId === null || captureContext.pageUrl !== `${location.origin}${location.pathname}`) return null;
+  return latestInContext({ ...state, captureContexts: { [ownTabId]: captureContext } }, ownTabId, state.settings.captureMode);
 }
 
 function currentPowReading() {
@@ -130,14 +168,16 @@ function hasCurrentDocumentConversationRecord(): boolean {
     turn.conversationId === conversationId &&
     turn.phase === 'completed' &&
     turn.sources.includes('conversation_record') &&
-    Date.parse(turn.observedAt) >= documentStartedAtMs &&
+    turn.captureContextId === captureContext?.id &&
     Boolean(turn.routeModel || turn.modelLabel || turn.modelLabelConflict)
   );
 }
 
 async function scanReloadDom(): Promise<void> {
-  if (!reloadScanEnabledForDocument || scanRunning || state?.settings.autoCaptureEnabled === false || state?.settings.captureMode !== 'reload') return;
+  if (!captureContext?.reloadEligible || scanRunning || !state?.settings.autoCaptureEnabled ||
+    captureContext.pageUrl !== `${location.origin}${location.pathname}`) return;
   if (hasCurrentDocumentConversationRecord()) return;
+  const context = captureContext;
   scanRunning = true;
   try {
     const pathname = location.pathname;
@@ -145,8 +185,10 @@ async function scanReloadDom(): Promise<void> {
     if (!conversationId) return;
     const nodes = trackDomNodes();
     for (const [index, node] of nodes.entries()) {
-      if (location.pathname !== pathname || !reloadScanEnabledForDocument || !state?.settings.autoCaptureEnabled || state.settings.captureMode !== 'reload') break;
-      if (!node.isConnected || nodeIdentities.get(node)?.pathname !== pathname) continue;
+      if (location.pathname !== pathname || captureContext?.id !== context.id || !captureContext.reloadEligible || !state?.settings.autoCaptureEnabled) break;
+      const identity = nodeIdentities.get(node);
+      if (!node.isConnected || identity?.pathname !== pathname || identity.contextId !== context.id || identity.blocked ||
+        identity.observedAt <= Date.parse(state.clearedAt ?? '')) continue;
       const model = node.getAttribute('data-message-model-slug')?.trim() ?? '';
       if (!model || model.length > 256) continue;
       const messageKey = node.getAttribute('data-message-id') ?? String(index);
@@ -159,11 +201,12 @@ async function scanReloadDom(): Promise<void> {
           type: 'route:observation',
           observation: {
             captureId: crypto.randomUUID(),
+            captureContextId: context.id,
             source: 'assistant_dom',
             captureMode: 'reload',
             phase: 'completed',
             observedAt,
-            startedAt: observedAt,
+            startedAt: new Date(identity.observedAt).toISOString(),
             completedAt: observedAt,
             pageUrl: `${location.origin}${pathname}`,
             conversationId,
@@ -194,7 +237,6 @@ function scheduleReloadDomScan(): void {
 }
 
 async function updateSettings(settings: Partial<InspectorState['settings']>): Promise<void> {
-  if (settings.captureMode !== undefined) reloadScanEnabledForDocument = false;
   const response = await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({
     type: 'route:update-settings',
     settings
@@ -350,6 +392,19 @@ function render(): void {
 
 window.addEventListener('message', (event: MessageEvent<unknown>) => {
   if (event.source === window && event.origin === location.origin &&
+    (event.data as { source?: string } | null)?.source === 'chatgpt-route-inspector-context') {
+    const next = normalizeCaptureContext((event.data as { context?: unknown }).context);
+    if (!next || new URL(next.pageUrl).origin !== location.origin || !newerContext(captureContext ?? undefined, next)) return;
+    if (captureContext?.id !== next.id) seenDomRoutes.clear();
+    captureContext = next;
+    trackDomNodes();
+    render();
+    scheduleReloadDomScan();
+    pendingContext = next;
+    void syncContext();
+    return;
+  }
+  if (event.source === window && event.origin === location.origin &&
     (event.data as { source?: string } | null)?.source === 'chatgpt-route-inspector-control-request') {
     publishCaptureControl();
     return;
@@ -366,7 +421,6 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       if (response.ok && response.state) acceptState(response.state);
       return;
     }
-    if (state?.settings.captureMode !== envelope.observation.captureMode) return;
     const response = await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({
       type: 'route:observation',
       observation: envelope.observation
@@ -384,7 +438,7 @@ chrome.runtime.onMessage.addListener((message: unknown) => {
 });
 
 const domObserver = new MutationObserver(() => {
-  if (reloadScanEnabledForDocument) trackDomNodes();
+  if (captureContext?.reloadEligible || state?.settings.autoCaptureEnabled === false) trackDomNodes();
   if (state?.settings.overlayEnabled && !host?.isConnected) render();
   scheduleReloadDomScan();
 });
@@ -404,3 +458,4 @@ if (document.documentElement) observeDocument();
 else document.addEventListener('DOMContentLoaded', observeDocument, { once: true });
 
 void stateReady;
+window.postMessage({ source: 'chatgpt-route-inspector-context-request' }, location.origin);

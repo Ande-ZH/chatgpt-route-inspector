@@ -1,4 +1,5 @@
-import { clearState, mutateState, readState, storeObservation, storePowObservation } from './storage';
+import { clearState, mutateState, readState, storeObservation, storePowObservation, storeCaptureContext } from './storage';
+import { latestInContext, normalizeCaptureContext } from '../core/capture-context';
 import { stateForTab } from '../core/state';
 import { normalizeUiLanguage } from '../core/language';
 import { normalizeObservation } from '../core/observation';
@@ -10,7 +11,7 @@ const badgeTexts = new Map<number, string>();
 
 async function updateBadge(tabId: number | undefined, state: InspectorState): Promise<void> {
   if (tabId === undefined) return;
-  const latest = state.turns.find((turn) => turn.tabId === tabId && turn.captureMode === state.settings.captureMode);
+  const latest = latestInContext(state, tabId, state.settings.captureMode);
   const text = !latest || !state.settings.autoCaptureEnabled ? '' : latest.phase === 'failed' ? '?' : latest?.verdict === 'mismatch' || latest?.verdict === 'conflict'
     ? '!'
     : latest?.verdict === 'normal'
@@ -93,6 +94,15 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse: (respo
     if (sender.url && allowedOrigins.has(new URL(sender.url).origin)) contentTabId = sender.tab?.id;
   } catch { /* An invalid sender URL never acquires a content-tab scope. */ }
   void (async () => {
+    if (request.type === 'route:context') {
+      const context = normalizeCaptureContext(request.context);
+      if (contentTabId === undefined || !context || new URL(context.pageUrl).origin !== new URL(sender.url!).origin) {
+        return { ok: false, error: 'Invalid capture context.' };
+      }
+      const state = await storeCaptureContext(contentTabId, context);
+      await publish(state);
+      return { ok: true, state };
+    }
     if (request.type === 'route:observation') {
       const observation: RouteObservation = sender.tab?.id === undefined
         ? request.observation
@@ -134,4 +144,14 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse: (respo
     error: error instanceof Error ? error.message : '扩展内部错误。'
   }));
   return true;
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  badgeTexts.delete(tabId);
+  void mutateState((state) => {
+    if (!state.captureContexts?.[tabId]) return state;
+    const captureContexts = { ...state.captureContexts };
+    delete captureContexts[tabId];
+    return { ...state, captureContexts };
+  }).then(publish).catch((error: unknown) => console.error('Could not clear closed-tab capture context.', error));
 });

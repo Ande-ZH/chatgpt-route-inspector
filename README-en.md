@@ -80,17 +80,19 @@ The unpacked extension is written to `dist/extension`. Open `chrome://extensions
 
 ## Usage
 
+Live requests and conversation reloads are captured automatically in parallel. The tabs only select which result to display; selecting a tab beforehand is unnecessary. Results stay separate, and a channel without a capture in the current page shows `—`. Earlier records remain available in Diagnostics.
+
 ### Inspect a new answer
 
 1. Open ChatGPT and enter the target conversation.
-2. Click the extension icon and select **Live request**.
-3. Choose a model in ChatGPT and send a message.
+2. Choose a model in ChatGPT and send a message.
+3. Click the extension icon and select **Live request**.
 4. Read **Requested → Response route** in the Popup or page overlay.
 
 ### Review an existing answer
 
-1. Select **Reload session** in the Popup.
-2. Reload the current ChatGPT conversation.
+1. Reload the current ChatGPT conversation.
+2. Select **Reload session** in the Popup.
 3. Review the response-route information available for that conversation.
 
 ### Manage the page overlay

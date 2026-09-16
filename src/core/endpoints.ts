@@ -34,6 +34,10 @@ export function classifyEndpoint(input: string, base = 'https://chatgpt.com/'): 
 
   const match = /^\/backend-api\/conversations?\/([^/]+)$/.exec(url.pathname);
   if (match?.[1]) {
+    // History pagination is not a snapshot of the conversation being opened.
+    if (['cursor', 'offset', 'before', 'after'].some((key) => url.searchParams.has(key))) {
+      return { kind: 'other', conversationId: null };
+    }
     try {
       return { kind: 'conversation_record', conversationId: decodeURIComponent(match[1]) };
     } catch {

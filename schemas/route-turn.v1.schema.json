@@ -15,7 +15,8 @@
   ],
   "properties": {
     "schema": { "const": "chatgpt-route-observation" },
-    "schemaVersion": { "const": "1.6.0" },
+    "schemaVersion": { "const": "1.7.0" },
+    "captureContextId": { "type": "string", "maxLength": 128 },
     "deepResearchRemaining": { "type": ["integer", "null"], "minimum": 0 },
     "deepResearchResetAt": { "type": ["string", "null"], "format": "date-time" },
     "imageGenRemaining": { "type": ["integer", "null"], "minimum": 0 },

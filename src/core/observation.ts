@@ -87,6 +87,8 @@ export function normalizeObservation(value: unknown): RouteObservation | null {
     observedAt,
     ...routeFields(record)
   };
+  const captureContextId = boundedString(record.captureContextId, 128);
+  if (captureContextId) result.captureContextId = captureContextId;
   if (typeof record.tabId === 'number' && Number.isInteger(record.tabId) && record.tabId >= 0) result.tabId = record.tabId;
   const pageUrl = safePageUrl(record.pageUrl);
   if (pageUrl) result.pageUrl = pageUrl;

@@ -60,7 +60,7 @@ describe('audit regressions', () => {
         clear: vi.fn(async () => { for (const key of Object.keys(disk)) delete disk[key]; })
       } },
       action: { setBadgeText: vi.fn(), setBadgeBackgroundColor: vi.fn() },
-      tabs: { query: vi.fn(async () => []), sendMessage: vi.fn() },
+      tabs: { query: vi.fn(async () => []), sendMessage: vi.fn(), onRemoved: { addListener: vi.fn() } },
       runtime: {
         onInstalled: { addListener: vi.fn() }, sendMessage: vi.fn(),
         onMessage: { addListener: vi.fn((handler) => { listener = handler; }) }
@@ -120,5 +120,22 @@ describe('audit regressions', () => {
     const success = await storage.storeObservation(observation);
     expect(success.turns).toHaveLength(1);
     expect(success.revision).toBe(1);
+  });
+
+  it('persists active contexts across worker restarts and rejects delayed old documents', async () => {
+    const disk: Record<string, unknown> = {};
+    vi.stubGlobal('chrome', { i18n: { getUILanguage: () => 'en' }, storage: { local: {
+      get: vi.fn(async () => structuredClone(disk)), set: vi.fn(async (next) => Object.assign(disk, structuredClone(next)))
+    } } });
+    let storage = await import('../../src/background/storage');
+    const context = { id: 'new-visit', documentId: 'new-document', documentStartedAt: 200,
+      revision: 0, pageUrl: 'https://chatgpt.com/c/current', reloadEligible: true };
+    const first = await storage.storeCaptureContext(7, context);
+    const ignored = await storage.storeCaptureContext(7, { ...context, documentId: 'old-document', documentStartedAt: 100, revision: 99 });
+    expect(ignored.revision).toBe(first.revision);
+    vi.resetModules();
+    storage = await import('../../src/background/storage');
+    expect((await storage.readState()).captureContexts?.[7]).toEqual(context);
+    expect((await storage.clearState()).captureContexts?.[7]).toEqual(context);
   });
 });

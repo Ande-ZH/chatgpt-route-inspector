@@ -1,4 +1,5 @@
 import type { CaptureMode, InspectorState, PowReading, RouteTurn, RouteVerdict, UiLanguage } from '../../core/types';
+import { latestInContext } from '../../core/capture-context';
 import type { RuntimeRequest, RuntimeResponse } from '../../shared/messages';
 import { t } from './i18n';
 
@@ -144,8 +145,7 @@ export function assessmentReasons(turn: RouteTurn, language: UiLanguage): string
 }
 
 export function latestForTab(state: InspectorState, tabId?: number, mode = state.settings.captureMode): RouteTurn | null {
-  if (tabId === undefined) return null;
-  return state.turns.find((turn) => turn.captureMode === mode && turn.tabId === tabId) ?? null;
+  return latestInContext(state, tabId, mode);
 }
 
 export function latestPowForTab(state: InspectorState, tabId?: number): PowReading | null {

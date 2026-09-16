@@ -46,6 +46,7 @@ export function createTurn(observation: RouteObservation): RouteTurn {
     schema: ROUTE_SCHEMA,
     schemaVersion: ROUTE_SCHEMA_VERSION,
     captureId: observation.captureId,
+    ...(observation.captureContextId ? { captureContextId: observation.captureContextId } : {}),
     sources: [observation.source],
     captureMode: observation.captureMode,
     phase: observation.phase,
@@ -123,6 +124,7 @@ export function mergeTurn(turn: RouteTurn, observation: RouteObservation): Route
 export function upsertTurn(turns: RouteTurn[], observation: RouteObservation): RouteTurn[] {
   const index = turns.findIndex((turn) =>
     turn.tabId === (observation.tabId ?? null) && turn.captureMode === observation.captureMode &&
+    turn.captureContextId === observation.captureContextId &&
     (turn.captureId === observation.captureId ||
     (
       observation.requestId !== undefined && observation.requestId !== null &&

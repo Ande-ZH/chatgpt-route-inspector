@@ -1,6 +1,7 @@
-import type { InspectorSettings, InspectorState, PowObservation, RouteObservation } from '../core/types';
+import type { CaptureContext, InspectorSettings, InspectorState, PowObservation, RouteObservation } from '../core/types';
 
 export type RuntimeRequest =
+  | { type: 'route:context'; context: CaptureContext }
   | { type: 'route:observation'; observation: RouteObservation }
   | { type: 'pow:observation'; observation: PowObservation }
   | { type: 'route:get-state'; tabId?: number }

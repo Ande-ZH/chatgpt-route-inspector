@@ -3,6 +3,8 @@ import { browserUiLanguage, normalizeUiLanguage } from '../core/language';
 import { migrateStoredTurn } from '../core/migration';
 import { normalizePowObservation, upsertPowReading } from '../core/pow';
 import { newestCaptureFirst, upsertTurn } from '../core/turns';
+import { newerContext, normalizeCaptureContext } from '../core/capture-context';
+import type { CaptureContext } from '../core/types';
 
 const STORAGE_KEY = 'chatgptRouteInspectorStateV1';
 let queue = Promise.resolve();
@@ -37,6 +39,10 @@ async function loadState(): Promise<InspectorState> {
     revision: Number.isSafeInteger(candidate.revision) && (candidate.revision ?? 0) >= 0 ? candidate.revision! : 0,
     ...(candidate.clearedAt ? { clearedAt: candidate.clearedAt } : {}),
     turns: turns.sort(newestCaptureFirst),
+    captureContexts: Object.fromEntries(Object.entries(candidate.captureContexts ?? {}).flatMap(([tab, value]) => {
+      const context = normalizeCaptureContext(value);
+      return context && /^\d+$/.test(tab) ? [[tab, context]] : [];
+    })),
     powReadings,
     settings: {
       ...DEFAULT_SETTINGS,
@@ -62,8 +68,15 @@ export async function readState(): Promise<InspectorState> {
 
 export function clearState(): Promise<InspectorState> {
   return mutateState((current) => ({
-    ...defaultState(), settings: current.settings, clearedAt: new Date().toISOString()
+    ...defaultState(), settings: current.settings, captureContexts: current.captureContexts ?? {}, clearedAt: new Date().toISOString()
   }));
+}
+
+export function storeCaptureContext(tabId: number, context: CaptureContext): Promise<InspectorState> {
+  return mutateState((state) => {
+    if (!newerContext(state.captureContexts?.[tabId], context)) return state;
+    return { ...state, captureContexts: { ...state.captureContexts, [tabId]: context } };
+  });
 }
 
 export function storePowObservation(observation: PowObservation): Promise<InspectorState> {
@@ -91,7 +104,9 @@ export function storeObservation(observation: RouteObservation): Promise<Inspect
   return mutateState((state) => {
     if (isCleared(state, observation.startedAt ?? observation.observedAt)) return state;
     const turns = upsertTurn(state.turns, observation).slice(0, state.settings.retentionLimit);
-    const previous = state.turns.find((turn) => turn.captureId === observation.captureId && turn.tabId === (observation.tabId ?? null));
+    const previous = state.turns.find((turn) => turn.captureId === observation.captureId &&
+      turn.tabId === (observation.tabId ?? null) && turn.captureMode === observation.captureMode &&
+      turn.captureContextId === observation.captureContextId);
     const stale = previous && Date.parse(observation.observedAt) < Date.parse(previous.observedAt);
     const failed = observation.phase === 'failed' && previous?.phase !== 'failed';
     const successful = observation.phase !== 'requested' && observation.phase !== 'failed' && Boolean(

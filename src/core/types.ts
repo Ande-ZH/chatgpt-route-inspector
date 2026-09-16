@@ -1,5 +1,5 @@
 export const ROUTE_SCHEMA = 'chatgpt-route-observation' as const;
-export const ROUTE_SCHEMA_VERSION = '1.6.0' as const;
+export const ROUTE_SCHEMA_VERSION = '1.7.0' as const;
 
 export type CaptureSource = 'page_fetch' | 'page_websocket' | 'conversation_record' | 'assistant_dom';
 export type CaptureMode = 'live' | 'reload';
@@ -64,6 +64,7 @@ export interface RouteAssessment {
 }
 
 export interface RouteObservation extends Partial<RouteFields> {
+  captureContextId?: string;
   captureId: string;
   source: CaptureSource;
   captureMode: CaptureMode;
@@ -78,6 +79,7 @@ export interface RouteObservation extends Partial<RouteFields> {
 }
 
 export interface RouteTurn extends RouteFields, RouteAssessment {
+  captureContextId?: string;
   schema: typeof ROUTE_SCHEMA;
   schemaVersion: typeof ROUTE_SCHEMA_VERSION;
   captureId: string;
@@ -102,6 +104,7 @@ export interface InspectorSettings {
   retentionLimit: number;
   includeRequestIdsInExport: boolean;
   autoCaptureEnabled: boolean;
+  /** Display selection only; both capture channels run while automatic capture is enabled. */
   captureMode: CaptureMode;
   uiLanguage: UiLanguage;
 }
@@ -120,7 +123,19 @@ export interface PowReading {
   tabId: number | null;
 }
 
+export interface CaptureContext {
+  id: string;
+  documentId: string;
+  documentStartedAt: number;
+  /** Absent only in contexts produced by earlier extension builds. */
+  visitStartedAt?: number;
+  revision: number;
+  pageUrl: string;
+  reloadEligible: boolean;
+}
+
 export interface InspectorState {
+  captureContexts?: Record<number, CaptureContext>;
   /** Persisted monotonic snapshot version; absent only in older installations. */
   revision?: number;
   clearedAt?: string;

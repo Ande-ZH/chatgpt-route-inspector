@@ -7,6 +7,7 @@ export function isStaleState(current: InspectorState | null | undefined, next: I
 export function stateForTab(state: InspectorState, tabId: number): InspectorState {
   return {
     ...state,
+    captureContexts: state.captureContexts?.[tabId] ? { [tabId]: state.captureContexts[tabId] } : {},
     turns: state.turns.filter((turn) => turn.tabId === tabId),
     powReadings: state.powReadings.filter((reading) => reading.tabId === tabId)
   };

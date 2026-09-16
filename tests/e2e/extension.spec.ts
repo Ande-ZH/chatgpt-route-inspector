@@ -87,13 +87,13 @@ async function findExtensionCapableChromium(): Promise<string> {
 }
 
 test.beforeAll(async () => {
-  const [requestBody, responseBody, conversationMessages, frame, deltaBody] = await Promise.all([
+  const [requestBody, responseBody, conversationMessages, frame, deltaBody] = (await Promise.all([
     readFile(path.join(root, 'tests', 'fixtures', 'conversation-request.json'), 'utf8'),
     readFile(path.join(root, 'tests', 'fixtures', 'handoff-response.sse'), 'utf8'),
     readFile(path.join(root, 'tests', 'fixtures', 'conversation-messages.json'), 'utf8'),
     readFile(path.join(root, 'tests', 'fixtures', 'websocket-route-frame.json'), 'utf8'),
     readFile(path.join(root, 'tests', 'fixtures', 'delta-response.sse'), 'utf8')
-  ]);
+  ])).map((body) => body.replaceAll('conv-private-123456', 'e2e-conversation')) as [string, string, string, string, string];
   webSocketFrame = frame;
   server = createServer((request, response) => {
     if (request.method === 'POST' && request.url?.startsWith('/backend-api/f/conversation?delta=')) {
@@ -929,6 +929,10 @@ test('keeps live and reload captures distinct and stores no chat text', async ()
 
   await popup.locator('#mode-live').click();
   await expect(popup.locator('#footer-status')).toHaveText('Switched: Live request');
+  await expect(popup.locator('.route-model strong')).toHaveText(['—', '—']);
+  // Revisit the matching conversation and make a new request; old live history stays hidden.
+  await page.evaluate(() => history.pushState({}, '', '/c/e2e-conversation'));
+  await page.locator('#ask').click();
   await expect(popup.locator('.route-model strong').last()).toHaveText('Route conflict');
   await expect(popup.locator('.verdict-line b')).toHaveText('Route conflict');
   const adapterValue = popup.getByText('page_fetch+page_websocket');
@@ -1321,6 +1325,118 @@ test('shows only GPT-5.6 and GPT-5.5 auto reasoning in the dashboard, popup and 
   await Promise.all([page.close(), popup.close(), dashboard.close()]);
 });
 
+test('collects both modes independently and isolates reloads, SPA visits and late responses', async () => {
+  const setup = await context.newPage();
+  await setup.goto(`chrome-extension://${extensionId}/ui/dashboard/index.html`);
+  await setup.evaluate(async () => {
+    await chrome.runtime.sendMessage({ type: 'route:clear' });
+    await chrome.runtime.sendMessage({ type: 'route:update-settings', settings: {
+      captureMode: 'live', uiLanguage: 'zh', autoCaptureEnabled: true, overlayEnabled: true, overlayMode: 'full'
+    } });
+  });
+  const page = await context.newPage();
+  let releaseLate: (() => void) | undefined;
+  let startedLate: (() => void) | undefined;
+  await page.route('**/c/**', (route) => route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><body>Dual capture fixture</body></html>' }));
+  await page.route('**/backend-api/conversation/*', async (route) => {
+    if (new URL(route.request().url()).searchParams.has('late')) {
+      startedLate?.();
+      await new Promise<void>((resolve) => { releaseLate = resolve; });
+    }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ resolved_model_slug: 'reload-route' }) });
+  });
+  await page.route('**/backend-api/f/conversation', (route) => route.fulfill({ contentType: 'text/event-stream', body:
+    `data: ${JSON.stringify({ conversation_id: 'dual-a', resolved_model_slug: 'live-route' })}\n\ndata: [DONE]\n\n` }));
+  await page.goto('http://127.0.0.1:43996/c/dual-a');
+  const overlay = page.locator('#chatgpt-route-inspector-root');
+  await expect(overlay).toHaveCount(1);
+  const readRecord = () => page.evaluate(async () => {
+    await fetch('/backend-api/conversation/dual-a').then((r) => r.text());
+  });
+  const ask = () => page.evaluate(async () => {
+    await fetch('/backend-api/f/conversation', { method: 'POST', body: JSON.stringify({ model: 'live-route', conversation_id: 'dual-a' }) }).then((r) => r.text());
+    const answer = document.createElement('div');
+    answer.dataset.messageAuthorRole = 'assistant'; answer.dataset.messageModelSlug = 'live-dom'; answer.dataset.messageId = 'new-live-answer';
+    document.body.append(answer);
+  });
+  const storedModes = () => worker.evaluate(async (key) => {
+    const state = (await chrome.storage.local.get(key))[key] as { turns: Array<{ captureMode: string; conversationId: string }> };
+    return state.turns.filter((t) => t.conversationId === 'dual-a').map((t) => t.captureMode).sort();
+  }, storageKey);
+
+  // Reload happens in the background while the live view stays empty.
+  await readRecord();
+  await expect.poll(storedModes).toEqual(['reload']);
+  await expect(overlay.locator('.status')).not.toContainText('reload-route');
+  await expect(overlay.locator('.model b').first()).toHaveText('—');
+  await overlay.locator('#mode-reload').click();
+  await expect(overlay).toContainText('reload-route');
+  // Sending with reload selected updates only the live channel.
+  await ask();
+  await expect.poll(storedModes).toEqual(['live', 'reload']);
+  await expect(overlay).toContainText('reload-route');
+  await expect(overlay).not.toContainText('live-route');
+  await overlay.locator('#mode-live').click();
+  await expect(overlay).toContainText('live-route');
+  await overlay.locator('#mode-reload').click();
+  await expect(overlay).toContainText('reload-route');
+
+  // A fresh document cannot reuse either channel's history.
+  await page.reload();
+  await expect(overlay.locator('.model b').first()).toHaveText('—');
+  await ask();
+  await page.waitForTimeout(1500);
+  await expect(overlay).not.toContainText('live-dom');
+  await expect(overlay).not.toContainText('reload-route');
+  await expect(overlay.locator('.model b').first()).toHaveText('—');
+  await overlay.locator('#mode-live').click();
+  await expect(overlay).toContainText('live-route');
+
+  // Old requests finish in their original scope; even returning to A creates a new visit.
+  await page.reload();
+  const lateStarted = new Promise<void>((resolve) => { startedLate = resolve; });
+  await page.evaluate(() => { void fetch('/backend-api/conversation/dual-a?late=1').then((r) => r.text()); });
+  await lateStarted;
+  await page.evaluate(() => history.pushState({}, '', '/c/dual-b'));
+  releaseLate!();
+  await expect.poll(storedModes).toEqual(['live', 'live', 'reload', 'reload']);
+  await overlay.locator('#mode-reload').click();
+  await expect(overlay.locator('.model b').first()).toHaveText('—');
+  await expect(overlay).not.toContainText('reload-route');
+  await page.evaluate(() => history.pushState({}, '', '/c/dual-a'));
+  await expect(overlay.locator('.model b').first()).toHaveText('—');
+  await expect(overlay).not.toContainText('reload-route');
+  await overlay.locator('#mode-live').click();
+  await expect(overlay).not.toContainText('live-route');
+
+  // Popup and badge use the same empty current-context selection, not tab-wide history.
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${extensionId}/ui/popup/index.html`);
+  await page.bringToFront();
+  await popup.reload();
+  await expect(popup.locator('.route-model strong')).toHaveText(['—', '—']);
+  await expect.poll(() => worker.evaluate(async () => {
+    const tabs = await chrome.tabs.query({ active: true });
+    const tab = tabs.find((t) => t.url?.includes('/c/dual-a'));
+    return tab?.id === undefined ? 'missing' : chrome.action.getBadgeText({ tabId: tab.id });
+  })).toBe('');
+  for (const order of ['url-first', 'response-first']) {
+    await page.goto('http://127.0.0.1:43996/delta-fixture');
+    await expect(overlay).toHaveCount(1);
+    await overlay.locator('#mode-reload').click();
+    await page.evaluate(async (order) => {
+      const response = fetch('/backend-api/f/conversation', { method: 'POST', body: JSON.stringify({ model: 'live-route' }) });
+      if (order === 'url-first') history.replaceState({}, '', '/c/dual-a');
+      await response.then((r) => r.text());
+      if (order === 'response-first') history.replaceState({}, '', '/c/dual-a');
+    }, order);
+    await expect(overlay.locator('.model b').first()).toHaveText('—');
+    await overlay.locator('#mode-live').click();
+    await expect(overlay).toContainText('live-route');
+  }
+  await Promise.all([page.close(), setup.close(), popup.close()]);
+});
+
 test('captures passive quota snapshots and displays four rows immediately above request ID', async () => {
   const dashboard = await context.newPage();
   await dashboard.setViewportSize({ width: 1600, height: 1250 });
@@ -1393,7 +1509,12 @@ test('rejects stale UI snapshots, keeps overlay nodes stable, and blocks post-cl
   const overlay = page.locator('#chatgpt-route-inspector-root');
   await expect(overlay).toHaveCount(1);
   const startedAt = new Date().toISOString();
+  const captureContextId = await worker.evaluate(async (key) => {
+    const state = (await chrome.storage.local.get(key))[key];
+    return (Object.values(state.captureContexts) as Array<{ id: string; pageUrl: string }>).find((c) => c.pageUrl.endsWith('/c/audit-regression'))!.id;
+  }, storageKey);
   const observation = {
+    captureContextId,
     captureId: 'audit-stable-capture', source: 'page_fetch', captureMode: 'live', phase: 'completed',
     observedAt: startedAt, startedAt, requestedModel: 'gpt-audit', resolvedModelSlug: 'gpt-audit', conversationId: 'audit-regression'
   };
@@ -1438,7 +1559,10 @@ test('rejects stale UI snapshots, keeps overlay nodes stable, and blocks post-cl
   await expect(dashboard.locator('#rows tr')).toHaveCount(0);
   await expect.poll(() => worker.evaluate((tabId) => chrome.action.getBadgeText({ tabId }), tabId)).toBe('');
   const rejected = await options.evaluate(async () => (await chrome.runtime.sendMessage({ type: 'route:get-state' })).state);
-  expect(rejected.revision).toBe(cleared.revision);
+  // Closing fallback in each document legitimately publishes context revisions after clear.
+  expect(rejected.turns).toEqual([]);
+  expect(rejected.parserHealth).toEqual(cleared.parserHealth);
+  expect(rejected.clearedAt).toBe(cleared.clearedAt);
 
   // A failed save reports failure without a success toast or an unhandled promise rejection.
   const errors: string[] = [];

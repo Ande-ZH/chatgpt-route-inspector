@@ -1,10 +1,11 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import type { RouteObservation } from '../../src/core/types';
+import type { CaptureContext, RouteObservation, RouteTurn } from '../../src/core/types';
 
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.resetModules(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.resetModules(); });
 
-async function hook(response: Response) {
+async function hook(response: Response, pathname = '/c/original') {
   const observations: RouteObservation[] = [];
+  const contexts: CaptureContext[] = [];
   const listeners = new Map<string, (event: unknown) => void>();
   const sockets: FakeSocket[] = [];
   class FakeSocket {
@@ -16,17 +17,24 @@ async function hook(response: Response) {
   const nativeFetch = vi.fn(async () => response);
   const windowMock = {
     fetch: nativeFetch as typeof window.fetch, WebSocket: FakeSocket,
-    postMessage: vi.fn((envelope) => { if (envelope.observation) observations.push(envelope.observation); }),
+    postMessage: vi.fn((envelope) => {
+      if (envelope.observation) observations.push(envelope.observation);
+      if (envelope.context) contexts.push(envelope.context);
+    }),
     addEventListener: vi.fn((type, listener) => listeners.set(type, listener)),
     setInterval: vi.fn()
   };
   vi.stubGlobal('__ROUTE_INSPECTOR_ALLOWED_ORIGINS__', ['https://chatgpt.com']);
   vi.stubGlobal('window', windowMock);
-  vi.stubGlobal('location', { origin: 'https://chatgpt.com', pathname: '/c/original', href: 'https://chatgpt.com/c/original' });
+  vi.stubGlobal('location', { origin: 'https://chatgpt.com', pathname, href: `https://chatgpt.com${pathname}` });
   vi.stubGlobal('document', { addEventListener: vi.fn() });
   await import('../../src/content/page-hook');
   return {
-    observations, nativeFetch,
+    observations, contexts, nativeFetch,
+    navigate: (path: string) => {
+      Object.assign(location, { pathname: path, href: `https://chatgpt.com${path}` });
+      listeners.get('popstate')?.({});
+    },
     socket: () => {
       new windowMock.WebSocket('wss://chatgpt.com/ws');
       return { message: (data: string) => sockets.at(-1)?.handlers.get('message')?.({ data }) };
@@ -35,6 +43,7 @@ async function hook(response: Response) {
       method: 'POST', body: JSON.stringify(body)
     }),
     fetch: (input: RequestInfo | URL, init?: RequestInit) => windowMock.fetch(input, init),
+    restore: () => listeners.get('pageshow')?.({ persisted: true }),
     prune: () => windowMock.setInterval.mock.calls[0]?.[0](),
     control: (settings: object) => listeners.get('message')?.({ source: windowMock, origin: 'https://chatgpt.com', data: {
       source: 'chatgpt-route-inspector-control', version: 1, revision: 1, autoCaptureEnabled: true, captureMode: 'live', ...settings
@@ -47,6 +56,462 @@ const event = (value: unknown) => `data: ${JSON.stringify(value)}\n\n`;
 const ws = (topic: string, text: string) => JSON.stringify([{ topic_id: topic, payload: { payload: { encoded_item: text } } }]);
 const handoff = (topic: string, key = 'topic_id') => sse(event({ type: 'stream_handoff' }) + event({ type: 'subscribe_ws_topic', [key]: topic }));
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+const record = (model: string) => new Response(JSON.stringify({ resolved_model_slug: model }), {
+  headers: { 'content-type': 'application/json' }
+});
+
+it.each(['new', 'other'])('N1: stages ambiguous GET until creation identity proves %s', async (identity) => {
+  const capture = await hook(sse(event({ resolved_model_slug: 'live-route' }) + event({ type: 'subscribe_ws_topic', topic_id: 'creation' })), '/');
+  await capture.request(undefined, { model: 'gpt-test', conversation_id: null, messages: [{ id: 'new-input' }] });
+  await settle();
+  capture.navigate('/c/new');
+  capture.nativeFetch.mockResolvedValueOnce(record('read-after-creation'));
+  await capture.fetch('/backend-api/conversation/new');
+  await settle();
+  expect(capture.observations.filter((o) => o.captureMode === 'reload')).toHaveLength(0);
+  capture.socket().message(ws('creation', event({ conversation_id: identity })));
+  await settle();
+  expect(capture.observations.filter((o) => o.captureMode === 'reload')).toHaveLength(identity === 'new' ? 0 : 1);
+});
+
+it('N2: delayed clear preserves a newer first-request identity across URL promotion', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(10_000);
+  const capture = await hook(handoff('creation'), '/');
+  vi.setSystemTime(12_000);
+  await capture.request(undefined, { model: 'gpt-test', conversation_id: null, messages: [{ id: 'new-input' }] });
+  await settle();
+  const id = capture.contexts.at(-1)!.id;
+  capture.navigate('/c/new');
+  vi.setSystemTime(13_000);
+  capture.control({ clearedAt: new Date(11_000).toISOString() });
+  capture.socket().message(ws('creation', event({ conversation_id: 'new' })));
+  await settle();
+  expect(capture.contexts.at(-1)?.id).toBe(id);
+  expect(capture.observations.at(-1)?.conversationId).toBe('new');
+});
+
+it('N3: identity and valid metadata survive a later decoding error in the same raw WS batch', async () => {
+  const capture = await hook(handoff('creation'), '/');
+  await capture.request(undefined, { model: 'gpt-test', conversation_id: null, messages: [{ id: 'new-input' }] });
+  await settle();
+  const id = capture.contexts.at(-1)!.id;
+  capture.navigate('/c/new');
+  const raw = [...JSON.parse(ws('creation', event({ conversation_id: 'new', resolved_model_slug: 'valid-route' }))),
+    ...JSON.parse(ws('creation', 'event: delta_encoding\ndata: "unsupported"\n\n'))];
+  capture.socket().message(JSON.stringify(raw));
+  await settle();
+  expect(capture.observations.at(-1)).toMatchObject({ phase: 'failed', errorCode: 'stream_decode_failed',
+    conversationId: 'new', resolvedModelSlug: 'valid-route' });
+  expect(capture.contexts.at(-1)?.id).toBe(id);
+});
+
+it('N3: validated identity survives an error later in the same encoded item', async () => {
+  const capture = await hook(handoff('creation'), '/');
+  await capture.request(undefined, { model: 'gpt-test', conversation_id: null, messages: [{ id: 'new-input' }] });
+  await settle();
+  const id = capture.contexts.at(-1)!.id;
+  capture.navigate('/c/new');
+  capture.socket().message(ws('creation', event({ conversation_id: 'new' }) + 'event: delta_encoding\ndata: "unsupported"\n\n'));
+  await settle();
+  expect(capture.observations.at(-1)).toMatchObject({ phase: 'failed', errorCode: 'stream_decode_failed', conversationId: 'new' });
+  expect(capture.contexts.at(-1)?.id).toBe(id);
+});
+
+it('N6: navigation while paused never opens DOM replay, but a fresh network read after resume works', async () => {
+  const capture = await hook(sse(event({ resolved_model_slug: 'paused-answer' })));
+  capture.control({ autoCaptureEnabled: false });
+  capture.navigate('/c/paused');
+  await capture.request();
+  await settle();
+  capture.control({ revision: 2 });
+  expect(capture.contexts.at(-1)?.reloadEligible).toBe(false);
+  expect(capture.observations).toHaveLength(0);
+  capture.nativeFetch.mockResolvedValueOnce(record('fresh-network'));
+  await capture.fetch('/backend-api/conversation/paused');
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.resolvedModelSlug).toBe('fresh-network'));
+});
+
+it('N7: a quota-only initial record updates quota without consuming the reload model slot', async () => {
+  const capture = await hook(new Response(JSON.stringify({ limits_progress: [
+    { feature_name: 'deep_research', remaining: 9 }, { feature_name: 'image_gen', remaining: 21 }
+  ] }), { headers: { 'content-type': 'application/json' } }));
+  await capture.fetch('/backend-api/conversation/original');
+  await settle();
+  expect(capture.observations).toHaveLength(0);
+  capture.nativeFetch.mockResolvedValueOnce(record('reload-model'));
+  await capture.fetch('/backend-api/conversation/original');
+  await settle();
+  expect(capture.observations.at(-1)).toMatchObject({ resolvedModelSlug: 'reload-model', deepResearchRemaining: 9, imageGenRemaining: 21 });
+  capture.nativeFetch.mockResolvedValueOnce(sse(event({ resolved_model_slug: 'live-model' })));
+  await capture.request();
+  await settle();
+  expect(capture.observations.at(-1)).toMatchObject({ resolvedModelSlug: 'live-model', deepResearchRemaining: 9, imageGenRemaining: 21 });
+});
+
+it.each(['expired', 'navigate', 'live', 'clear', 'pause'])('N1: ambiguous records never escape after %s', async (reason) => {
+  const capture = await hook(handoff('creation'), '/');
+  await capture.request(undefined, { model: 'gpt-test', conversation_id: null, messages: [{ id: 'new-input' }] });
+  await settle();
+  capture.navigate('/c/new');
+  let finish!: ReadableStreamDefaultController<Uint8Array>;
+  capture.nativeFetch.mockResolvedValueOnce(new Response(new ReadableStream<Uint8Array>({ start(c) { finish = c; } }), {
+    headers: { 'content-type': 'application/json' }
+  }));
+  await capture.fetch('/backend-api/conversation/new');
+  await settle();
+  if (reason === 'expired') vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 31_000);
+  if (reason === 'navigate') capture.navigate('/c/other');
+  if (reason === 'live') {
+    capture.nativeFetch.mockResolvedValueOnce(sse(event({ resolved_model_slug: 'second-live' })));
+    await capture.request(undefined, { model: 'gpt-test', conversation_id: 'new', messages: [{ id: 'second-input' }] });
+  }
+  if (reason === 'clear') capture.control({ clearedAt: new Date().toISOString() });
+  if (reason === 'pause') capture.control({ autoCaptureEnabled: false });
+  finish.enqueue(new TextEncoder().encode(JSON.stringify({ resolved_model_slug: 'ambiguous' })));
+  finish.close();
+  await settle();
+  capture.socket().message(ws('creation', event({ conversation_id: 'created-elsewhere' })));
+  await settle();
+  expect(capture.observations.filter((o) => o.captureMode === 'reload')).toHaveLength(0);
+});
+
+it.each(['prefetch', 'pause', 'clear'])('N7: quota-only data rejected by %s cannot seed a new live request', async (reason) => {
+  let finish!: ReadableStreamDefaultController<Uint8Array>;
+  const capture = await hook(new Response(new ReadableStream<Uint8Array>({ start(c) { finish = c; } }), {
+    headers: { 'content-type': 'application/json' }
+  }));
+  await capture.fetch(`/backend-api/conversation/${reason === 'prefetch' ? 'other' : 'original'}`);
+  if (reason === 'pause') capture.control({ autoCaptureEnabled: false });
+  if (reason === 'clear') capture.control({ clearedAt: new Date().toISOString() });
+  finish.enqueue(new TextEncoder().encode(JSON.stringify({ limits_progress: [{ feature_name: 'image_gen', remaining: 21 }] })));
+  finish.close();
+  await settle();
+  capture.control({ revision: 2 });
+  capture.nativeFetch.mockResolvedValueOnce(sse(event({ resolved_model_slug: 'fresh-live' })));
+  await capture.request();
+  await settle();
+  expect(capture.observations.at(-1)).toMatchObject({ resolvedModelSlug: 'fresh-live', imageGenRemaining: null });
+});
+
+it.each(['failed', 'pending'])('F1: captures an unrelated conversation after a %s creation', async (phase) => {
+  const capture = await hook(phase === 'failed' ? new Response('', { status: 503 }) : handoff('creation'), '/');
+  await capture.request(undefined, { model: 'gpt-test', conversation_id: null, messages: [{ id: 'new' }] });
+  await settle();
+  capture.navigate('/c/other');
+  expect(capture.contexts.at(-1)?.reloadEligible).toBe(phase === 'failed');
+  capture.nativeFetch.mockResolvedValueOnce(record('other-route'));
+  await capture.fetch('/backend-api/conversation/other');
+  // A bare model-only response cannot prove this is unrelated to the pending creation.
+  // Supply the live identity; the already-fetched unrelated record must then be released.
+  if (phase === 'pending') capture.socket().message(ws('creation', event({ conversation_id: 'created-elsewhere' })));
+  await vi.waitFor(() => expect(capture.observations.some((o) => o.captureMode === 'reload' && o.resolvedModelSlug === 'other-route')).toBe(true));
+});
+
+it.each(['pause', 'clear'])('F2: accepts fresh record requests after %s without reopening DOM fallback', async (reason) => {
+  const capture = await hook(record('fresh'));
+  if (reason === 'pause') {
+    capture.control({ autoCaptureEnabled: false });
+    capture.control({ revision: 2 });
+  } else capture.control({ clearedAt: new Date().toISOString() });
+  await settle();
+  expect(capture.contexts.at(-1)?.reloadEligible).toBe(false);
+  await capture.fetch('/backend-api/conversation/original');
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.resolvedModelSlug).toBe('fresh'));
+});
+
+it('F3: ignores pagination even when it precedes the initial record', async () => {
+  const capture = await hook(record('older'));
+  await capture.fetch('/backend-api/conversation/original?cursor=older');
+  await settle();
+  expect(capture.observations).toHaveLength(0);
+  capture.nativeFetch.mockResolvedValueOnce(record('initial'));
+  await capture.fetch('/backend-api/conversation/original');
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.resolvedModelSlug).toBe('initial'));
+});
+
+it('F4: captures an immediate page retry without waiting for clone parsing to fail', async () => {
+  const capture = await hook(new Response('invalid', { headers: { 'content-type': 'application/json' } }));
+  const response = await capture.fetch('/backend-api/conversation/original');
+  await expect(response.json()).rejects.toThrow();
+  capture.nativeFetch.mockResolvedValueOnce(record('retry'));
+  await capture.fetch('/backend-api/conversation/original');
+  await vi.waitFor(() => expect(capture.observations.some((o) => o.resolvedModelSlug === 'retry')).toBe(true));
+});
+
+it('F4: a pending failed clone cannot exclude or overwrite a successful retry', async () => {
+  let first!: ReadableStreamDefaultController<Uint8Array>;
+  const invalid = new Response('invalid', { headers: { 'content-type': 'application/json' } });
+  // Control only the inspection branch schedule; the page still reads its native response.
+  vi.spyOn(invalid, 'clone').mockReturnValue(new Response(new ReadableStream<Uint8Array>({ start(c) { first = c; } })));
+  const capture = await hook(invalid);
+  await expect((await capture.fetch('/backend-api/conversation/original')).json()).rejects.toThrow();
+  capture.nativeFetch.mockResolvedValueOnce(record('retry'));
+  await capture.fetch('/backend-api/conversation/original');
+  await vi.waitFor(() => expect(capture.observations.some((o) => o.resolvedModelSlug === 'retry')).toBe(true));
+  first.enqueue(new TextEncoder().encode('invalid'));
+  first.close();
+  await settle();
+  expect(capture.observations.at(-1)?.resolvedModelSlug).toBe('retry');
+  capture.nativeFetch.mockResolvedValueOnce(record('not-a-retry'));
+  await capture.fetch('/backend-api/conversation/original');
+  await settle();
+  expect(capture.observations.at(-1)?.resolvedModelSlug).toBe('retry');
+});
+
+it('R1: stages an early navigation GET without exposing a prefetch in the current visit', async () => {
+  const capture = await hook(record('next-route'));
+  await capture.fetch('/backend-api/conversation/next');
+  await settle();
+  expect(capture.observations).toHaveLength(0);
+  capture.navigate('/c/next');
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.resolvedModelSlug).toBe('next-route'));
+  expect(capture.observations.at(-1)?.captureContextId).toBe(capture.contexts.at(-1)?.id);
+  expect(capture.observations.at(-1)?.conversationId).toBe('next');
+});
+
+it('F5: identity-only raw WS evidence promotes the existing SSE capture', async () => {
+  const capture = await hook(sse(event({ resolved_model_slug: 'sse-route' }) + event({ type: 'subscribe_ws_topic', topic_id: 'creation' })), '/');
+  await capture.request(undefined, { model: 'gpt-test', conversation_id: null, messages: [{ id: 'new' }] });
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.resolvedModelSlug).toBe('sse-route'));
+  const original = capture.observations[0]!;
+  capture.navigate('/c/new-conv');
+  expect(capture.contexts.at(-1)?.reloadEligible).toBe(false);
+  capture.socket().message(ws('creation', event({ conversation_id: 'new-conv' }) + 'data: [DONE]\n\n'));
+  await vi.waitFor(() => expect(capture.contexts.at(-1)?.id).toBe(original.captureContextId));
+  expect(capture.observations.at(-1)).toMatchObject({ captureId: original.captureId, conversationId: 'new-conv' });
+  expect(capture.contexts.at(-1)?.reloadEligible).toBe(false);
+});
+
+it('B1: historical clear initialization does not cancel a newer in-flight reader', async () => {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const capture = await hook(new Response(new ReadableStream<Uint8Array>({ start(value) { controller = value; } }), {
+    headers: { 'content-type': 'application/json' }
+  }));
+  await capture.fetch('/backend-api/conversation/original');
+  await settle();
+  capture.control({ clearedAt: new Date(Date.now() - 86_400_000).toISOString() });
+  controller.enqueue(new TextEncoder().encode(JSON.stringify({ resolved_model_slug: 'newer' })));
+  controller.close();
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.resolvedModelSlug).toBe('newer'));
+});
+
+it('B1: a delayed older clear cannot reopen a newer committed reload snapshot', async () => {
+  const timestamp = Date.now();
+  vi.spyOn(Date, 'now').mockReturnValue(timestamp - 10_000);
+  const capture = await hook(record('newer'));
+  await capture.fetch('/backend-api/conversation/original');
+  await vi.waitFor(() => expect(capture.observations).toHaveLength(1));
+  capture.control({ clearedAt: new Date(timestamp - 5000).toISOString() });
+  capture.nativeFetch.mockResolvedValueOnce(record('duplicate'));
+  await capture.fetch('/backend-api/conversation/original');
+  await settle();
+  expect(capture.observations).toHaveLength(1);
+  expect(capture.observations[0]?.resolvedModelSlug).toBe('newer');
+});
+
+it.each(['pause', 'clear', 'restore'])('does not resurrect a late native fetch after %s', async (reason) => {
+  const capture = await hook(record('stale'));
+  let resolve!: (response: Response) => void;
+  capture.nativeFetch.mockReturnValueOnce(new Promise<Response>((done) => { resolve = done; }));
+  const old = capture.fetch('/backend-api/conversation/original');
+  if (reason === 'restore') capture.restore();
+  else {
+    capture.control(reason === 'pause' ? { autoCaptureEnabled: false } : { clearedAt: new Date().toISOString() });
+    capture.control({ revision: 2 });
+  }
+  resolve(record('stale'));
+  await old;
+  await settle();
+  expect(capture.observations).toHaveLength(0);
+  capture.nativeFetch.mockResolvedValueOnce(record('fresh'));
+  await capture.fetch('/backend-api/conversation/original');
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.resolvedModelSlug).toBe('fresh'));
+});
+
+it('commits only one valid snapshot from concurrent initial reads, leaving page responses intact', async () => {
+  let resolve!: (response: Response) => void;
+  const capture = await hook(record('first'));
+  capture.nativeFetch.mockReturnValueOnce(new Promise<Response>((done) => { resolve = done; }));
+  const slow = capture.fetch('/backend-api/conversation/original');
+  const fast = await capture.fetch('/backend-api/conversation/original');
+  expect(await fast.json()).toEqual({ resolved_model_slug: 'first' });
+  await vi.waitFor(() => expect(capture.observations).toHaveLength(1));
+  resolve(record('late'));
+  expect(await (await slow).json()).toEqual({ resolved_model_slug: 'late' });
+  await settle();
+  expect(capture.observations).toHaveLength(1);
+  expect(capture.observations[0]?.resolvedModelSlug).toBe('first');
+});
+
+it('an empty initial JSON does not exclude a later valid initial response', async () => {
+  const capture = await hook(new Response('{}', { headers: { 'content-type': 'application/json' } }));
+  await capture.fetch('/backend-api/conversation/original');
+  await settle();
+  capture.nativeFetch.mockResolvedValueOnce(record('valid'));
+  await capture.fetch('/backend-api/conversation/original?decorative=true');
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.resolvedModelSlug).toBe('valid'));
+});
+
+it.each(['intermediate', 'live', 'clear', 'expired'])('R1: discards an unmatched early read after %s', async (reason) => {
+  const capture = await hook(record('prefetched'));
+  await capture.fetch('/backend-api/conversation/next');
+  await settle();
+  if (reason === 'intermediate') capture.navigate('/c/intermediate');
+  if (reason === 'live') {
+    capture.nativeFetch.mockResolvedValueOnce(sse('data: [DONE]\n\n'));
+    await capture.request();
+    await settle();
+  }
+  if (reason === 'clear') capture.control({ clearedAt: new Date().toISOString() });
+  if (reason === 'expired') vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 31_000);
+  capture.navigate('/c/next');
+  await settle();
+  expect(capture.observations.filter((o) => o.captureMode === 'reload')).toHaveLength(0);
+});
+
+it('R1: binds an early in-flight read once, never to a later return visit', async () => {
+  const capture = await hook(record('next'));
+  let resolve!: (response: Response) => void;
+  capture.nativeFetch.mockReturnValueOnce(new Promise<Response>((done) => { resolve = done; }));
+  const early = capture.fetch('/backend-api/conversation/next');
+  capture.navigate('/c/next');
+  const firstVisit = capture.contexts.at(-1)?.id;
+  capture.navigate('/c/other');
+  capture.navigate('/c/next');
+  resolve(record('late-first-visit'));
+  await early;
+  await vi.waitFor(() => expect(capture.observations).toHaveLength(1));
+  expect(capture.observations[0]?.captureContextId).toBe(firstVisit);
+  expect(firstVisit).not.toBe(capture.contexts.at(-1)?.id);
+});
+
+it('F5: identity-only updates preserve the original model and do not create a reload turn', async () => {
+  const { upsertTurn } = await import('../../src/core/turns');
+  const { latestInContext } = await import('../../src/core/capture-context');
+  const { DEFAULT_SETTINGS } = await import('../../src/core/types');
+  const capture = await hook(sse(event({ resolved_model_slug: 'route' }) + event({ type: 'subscribe_ws_topic', topic_id: 'topic' })), '/');
+  await capture.request(undefined, { model: 'route', conversation_id: null, messages: [{ id: 'first' }] });
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.resolvedModelSlug).toBe('route'));
+  capture.socket().message(ws('wrong', event({ conversation_id: 'bad' })));
+  await settle();
+  expect(capture.contexts.at(-1)?.pageUrl).toBe('https://chatgpt.com/');
+  capture.socket().message(ws('topic', event({ conversation_id: 'new' })));
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.conversationId).toBe('new'));
+  capture.navigate('/c/new');
+  const state = { settings: DEFAULT_SETTINGS, turns: capture.observations.reduce((turns, o) => upsertTurn(turns, { ...o, tabId: 1 }), [] as RouteTurn[]),
+    powReadings: [], captureContexts: { 1: capture.contexts.at(-1)! }, parserHealth: { lastSuccessAt: null, lastFailureAt: null, consecutiveFailures: 0 } };
+  expect(state.turns).toHaveLength(1);
+  expect(latestInContext(state, 1, 'live')).toMatchObject({ routeModel: 'route', conversationId: 'new' });
+  expect(latestInContext(state, 1, 'reload')).toBeNull();
+});
+
+it('captures live requests while the reload tab is selected', async () => {
+  const capture = await hook(sse(event({ resolved_model_slug: 'gpt-live' }) + 'data: [DONE]\n\n'));
+  capture.control({ captureMode: 'reload' });
+  await capture.request();
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.resolvedModelSlug).toBe('gpt-live'));
+  expect(capture.observations.every((item) => item.captureMode === 'live')).toBe(true);
+});
+
+it('captures conversation reloads while the live tab is selected', async () => {
+  const capture = await hook(new Response(JSON.stringify({ resolved_model_slug: 'gpt-reload' }), {
+    headers: { 'content-type': 'application/json' }
+  }));
+  capture.control({ captureMode: 'live' });
+  await capture.fetch('/backend-api/conversation/original');
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.resolvedModelSlug).toBe('gpt-reload'));
+  expect(capture.observations.every((item) => item.captureMode === 'reload')).toBe(true);
+});
+
+it('keeps an in-flight live stream when the display tab changes', async () => {
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  const capture = await hook(new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }), {
+    headers: { 'content-type': 'text/event-stream' }
+  }));
+  capture.control({ captureMode: 'live' });
+  await capture.request();
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.phase).toBe('requested'));
+  capture.control({ captureMode: 'reload', revision: 2 });
+  stream.enqueue(new TextEncoder().encode(event({ resolved_model_slug: 'gpt-late' }) + 'data: [DONE]\n\n'));
+  stream.close();
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.resolvedModelSlug).toBe('gpt-late'));
+});
+
+it('ignores prefetches, post-live history reads and pagination without creating reload results', async () => {
+  const capture = await hook(new Response(JSON.stringify({ resolved_model_slug: 'gpt-record' }), {
+    headers: { 'content-type': 'application/json' }
+  }));
+  await capture.fetch('/backend-api/conversation/other');
+  expect(capture.observations).toHaveLength(0);
+  await capture.fetch('/backend-api/conversation/original');
+  await vi.waitFor(() => expect(capture.observations).toHaveLength(1));
+  await capture.fetch('/backend-api/conversation/original?cursor=old');
+  await settle();
+  expect(capture.observations).toHaveLength(1);
+  capture.nativeFetch.mockResolvedValue(sse(event({ resolved_model_slug: 'gpt-live' }) + 'data: [DONE]\n\n'));
+  await capture.request();
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.phase).toBe('completed'));
+  await capture.fetch('/backend-api/conversation/original');
+  await settle();
+  expect(capture.observations.filter((item) => item.captureMode === 'reload')).toHaveLength(1);
+});
+
+it('stamps late reload responses with their original context after navigating elsewhere', async () => {
+  let resolve!: (value: Response) => void;
+  const capture = await hook(new Response());
+  capture.nativeFetch.mockReturnValueOnce(new Promise<Response>((done) => { resolve = done; }));
+  const old = capture.fetch('/backend-api/conversation/original');
+  Object.assign(location, { pathname: '/c/other', href: 'https://chatgpt.com/c/other' });
+  capture.nativeFetch.mockResolvedValueOnce(new Response(JSON.stringify({ resolved_model_slug: 'gpt-new' }), {
+    headers: { 'content-type': 'application/json' }
+  }));
+  await capture.fetch('/backend-api/conversation/other');
+  await vi.waitFor(() => expect(capture.observations).toHaveLength(1));
+  resolve(new Response(JSON.stringify({ resolved_model_slug: 'gpt-old' }), { headers: { 'content-type': 'application/json' } }));
+  await old;
+  await vi.waitFor(() => expect(capture.observations).toHaveLength(2));
+  expect(capture.observations[0]?.captureContextId).not.toBe(capture.observations[1]?.captureContextId);
+  expect(capture.observations[1]?.conversationId).toBe('original');
+});
+
+it('allows retrying a failed initial reload without capturing subsequent pagination', async () => {
+  const capture = await hook(new Response('failed', { status: 503 }));
+  await capture.fetch('/backend-api/conversation/original');
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.phase).toBe('failed'));
+  capture.nativeFetch.mockResolvedValue(new Response(JSON.stringify({ resolved_model_slug: 'retried' }), {
+    headers: { 'content-type': 'application/json' }
+  }));
+  await capture.fetch('/backend-api/conversation/original');
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.resolvedModelSlug).toBe('retried'));
+  await capture.fetch('/backend-api/conversation/original?cursor=old');
+  await settle();
+  expect(capture.observations).toHaveLength(2);
+});
+
+it('preserves a WebSocket handoff across display switches', async () => {
+  const capture = await hook(handoff('topic'));
+  capture.control({ captureMode: 'live' });
+  await capture.request();
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.phase).toBe('responding'));
+  const contextId = capture.observations[0]?.captureContextId;
+  capture.control({ captureMode: 'reload', revision: 2 });
+  capture.socket().message(ws('topic', event({ resolved_model_slug: 'gpt-ws' })));
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.resolvedModelSlug).toBe('gpt-ws'));
+  expect(capture.observations.at(-1)?.captureContextId).toBe(contextId);
+});
+
+it('treats browser-cache restoration as a new visit and does not reuse old captures', async () => {
+  const capture = await hook(sse(event({ resolved_model_slug: 'first' }) + 'data: [DONE]\n\n'));
+  await capture.request();
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.phase).toBe('completed'));
+  const previous = capture.observations.at(-1)?.captureContextId;
+  capture.restore();
+  capture.nativeFetch.mockResolvedValue(sse(event({ resolved_model_slug: 'second' }) + 'data: [DONE]\n\n'));
+  await capture.request();
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.resolvedModelSlug).toBe('second'));
+  expect(capture.observations.at(-1)?.captureContextId).not.toBe(previous);
+});
 
 it.each(['topic_id', 'topic'])('binds SSE %s to metadata-only WebSocket evidence without persisting topic IDs', async (key) => {
   const capture = await hook(handoff('private-topic', key));
@@ -261,7 +726,7 @@ it('enforces byte limits on an undeclared stream without buffering the rest', as
   const response = new Response('{}', { headers: { 'content-type': 'application/json' } });
   vi.spyOn(response, 'clone').mockReturnValue(inspection);
   const capture = await hook(response);
-  await capture.request('/backend-api/conversation/conv');
+  await capture.fetch('/backend-api/conversation/original');
   await vi.waitFor(() => expect(capture.observations.at(-1)?.errorCode).toBe('record_too_large'));
   expect(reads).toBe(9);
   expect(cancelled).toHaveBeenCalledOnce();
@@ -301,7 +766,7 @@ it('cancels a declared oversized inspection body before reading it', async () =>
   const response = new Response('{}', { headers: { 'content-type': 'application/json' } });
   vi.spyOn(response, 'clone').mockReturnValue(inspection);
   const capture = await hook(response);
-  await capture.request('/backend-api/conversation/conv');
+  await capture.fetch('/backend-api/conversation/original');
   await vi.waitFor(() => expect(capture.observations.at(-1)?.errorCode).toBe('record_too_large'));
   expect(cancelled).toHaveBeenCalledOnce();
 });
