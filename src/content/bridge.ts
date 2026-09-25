@@ -6,7 +6,8 @@ import { isPageBridgeEnvelope, type RuntimeRequest, type RuntimeResponse } from 
 import { AUTHOR_LINK, AUTHOR_TEXT } from '../ui/shared/branding';
 import { t } from '../ui/shared/i18n';
 import { overlayVerdictCopy } from '../ui/shared/overlay';
-import { bindNoticeHint, currentNoticeHint, noticeHintStyles } from '../ui/shared/notice-hint';
+import { bindSuspectedDowngradeHint, currentSuspectedDowngradeHint, suspectedDowngradeHintStyles } from '../ui/shared/suspected-downgrade-hint';
+import { workModeHintMarkup, workModeHintStyles } from '../ui/shared/work-mode-hint';
 
 let state: InspectorState | null = null;
 let host: HTMLElement | null = null;
@@ -282,6 +283,11 @@ function render(): void {
   if (signature === renderedSignature) return;
   renderedSignature = signature;
   const copy = overlayVerdictCopy(turn, mode, language);
+  const statusMarkup = turn?.verdict === 'suspected_downgrade'
+    ? currentSuspectedDowngradeHint(language)
+    : turn?.verdict === 'work_unverifiable'
+      ? workModeHintMarkup(language)
+    : `<span class="status">${escapeHtml(copy.label)}</span>`;
   const routeModel = turn?.verdict === 'conflict' ? t(language, 'result.routeConflict') : turn?.routeModel ?? (turn ? t(language, 'value.unavailable') : null);
   const hint = t(language, mode === 'live' ? 'overlay.liveHint' : 'overlay.reloadHint');
   const requestedModel = turn?.requestedModel ?? (mode === 'reload' && turn ? t(language, 'value.reloadNoRequest') : null);
@@ -292,13 +298,16 @@ function render(): void {
     : t(language, 'pow.notCaptured');
   const styles = `
     <style>
-      ${noticeHintStyles}
+      ${suspectedDowngradeHintStyles}
+      ${workModeHintStyles}
       :host{all:initial}*{box-sizing:border-box}.probe{position:fixed;right:18px;bottom:18px;z-index:2147483647;width:356px;color:#f3f5ec;background:#10130f;border:1px solid #404a3b;box-shadow:0 24px 64px rgba(0,0,0,.42);font-family:"Bahnschrift","Avenir Next Condensed",sans-serif}.head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 11px;border-bottom:1px solid #30372d}.brand{display:flex;align-items:center;gap:8px;min-width:0}.brand-copy{display:grid;gap:2px;min-width:0}.brand-line{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 7px}.radar{width:17px;height:17px;border:1px solid #697461;border-radius:50%;position:relative;flex:0 0 auto}.radar:after{content:"";position:absolute;inset:5px;border-radius:50%;background:#a9f04d;box-shadow:0 0 12px #a9f04d}.title{font:700 11px/1.1 "Cascadia Mono",monospace;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap}.author{color:#75c5d8;font:700 8px/1.1 "Bahnschrift",sans-serif;text-decoration:none;text-underline-offset:2px;white-space:nowrap}.author:hover{text-decoration:underline}.head-tools{display:flex;align-items:center;gap:8px}.status{max-width:130px;text-align:right;font:10px/1.25 "Cascadia Mono",monospace;color:${copy.tone === 'normal' ? '#a9f04d' : copy.tone === 'danger' ? '#f07868' : '#efb55d'}}.icon-button{position:relative;display:grid;place-items:center;width:24px;height:22px;border:1px solid #404a3b;background:#171b16;color:#dfe4d8;cursor:pointer;font:700 14px/1 "Cascadia Mono",monospace}.icon-button:hover{border-color:#a9f04d;color:#a9f04d}.icon-button:after{content:attr(data-tooltip);position:absolute;top:calc(100% + 6px);right:-1px;z-index:2;width:max-content;padding:5px 7px;border:1px solid #aaa;background:#f1f1f1;box-shadow:0 2px 5px rgba(0,0,0,.22);color:#222;font:13px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;white-space:nowrap;pointer-events:none;opacity:0;visibility:hidden;transform:translateY(-2px);transition:opacity .08s ease,transform .08s ease}.icon-button:hover:after,.icon-button:focus-visible:after{opacity:1;visibility:visible;transform:translateY(0);transition-delay:.1s}.body{padding:12px}.modes{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:9px}.modes button{border:1px solid #30372d;background:#121612;color:#899382;padding:7px 6px;cursor:pointer;font:9px "Cascadia Mono",monospace}.modes button.active{border-color:#a9f04d;color:#a9f04d;background:rgba(169,240,77,.08);box-shadow:inset 3px 0 #a9f04d}.hint{margin:0 1px 9px;color:#899382;font:9px/1.4 "Cascadia Mono",monospace}.route{display:grid;grid-template-columns:1fr 24px 1fr;align-items:center;gap:6px;height:64px;padding:11px;background:#171b16;border:1px solid #30372d}.model small{display:block;color:#899382;font:8px "Cascadia Mono",monospace;text-transform:uppercase;letter-spacing:.1em}.model b{display:block;height:18px;margin-top:4px;overflow:hidden;text-overflow:ellipsis;font-size:12px;line-height:18px;white-space:nowrap}.arrow{text-align:center;color:#697461}.meta{display:grid;grid-template-columns:70px minmax(0,1fr);gap:5px 8px;margin-top:9px;color:#899382;font:8px/1.4 "Cascadia Mono",monospace}.meta code{color:#75c5d8;overflow-wrap:anywhere}.full-pow{display:grid;grid-template-columns:70px minmax(0,1fr);gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid #30372d;color:#899382;font:8px/1.4 "Cascadia Mono",monospace}.full-pow code{color:#75c5d8;overflow-wrap:anywhere}.actions{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px}.actions button{border:1px solid #404a3b;background:#171b16;color:#dfe4d8;padding:7px;cursor:pointer;font:9px "Cascadia Mono",monospace}.actions button:hover{border-color:#a9f04d}.actions .hide{color:#efb55d;border-color:rgba(239,181,93,.55)}.danger .route{border-color:rgba(240,120,104,.65);box-shadow:inset 3px 0 #f07868}.normal .route{border-color:rgba(169,240,77,.45);box-shadow:inset 3px 0 #a9f04d}.compact{width:420px}.compact-hit{display:block;width:100%;padding:10px;border:0;background:#10130f;color:inherit;text-align:left;cursor:pointer}.compact-hit:hover{background:#141914}.compact-hit:focus-visible{outline:2px solid #a9f04d;outline-offset:-3px}.compact .route{padding:8px 10px}.compact .model b{font-size:13px}.compact-pow{display:flex;align-items:center;gap:10px;margin-top:7px;padding:8px 10px;border:1px solid #30372d;background:#121612;color:#899382;font:8px/1.2 "Cascadia Mono",monospace;text-transform:uppercase;letter-spacing:.06em}.compact-pow code{min-width:0;overflow:hidden;color:#75c5d8;font:12px/1.2 "Cascadia Mono",monospace;text-overflow:ellipsis;white-space:nowrap;text-transform:none;letter-spacing:normal}.pow-divider{color:#566151;font:12px/1 "Cascadia Mono",monospace}@media(max-width:560px){.probe{right:8px;bottom:8px;max-width:calc(100vw - 16px)}}
       /* One shared scale for the full overlay and compact strip. */
       .probe{--type-meta:10px;--type-control:12px;--type-value:14px;--type-icon:16px;font-size:var(--type-icon)}
       .head{display:grid;grid-template-columns:minmax(0,1fr) auto}
       .head-tools{display:grid;grid-template-columns:minmax(0,auto) 24px 24px;align-items:center;min-width:0}
       .status{min-width:0;max-width:116px;justify-self:end;text-align:right;white-space:normal}
+      .probe:lang(en) .meta{grid-template-columns:max-content minmax(0,1fr);align-items:center}
+      .probe:lang(en) .meta>span{white-space:nowrap}
       .probe:lang(zh) .status{margin-right:4px;font-size:12px;white-space:nowrap}
       .probe:lang(en) .status{font-size:11px;line-height:1.15;white-space:nowrap}
       .hint{white-space:normal;overflow-wrap:anywhere}
@@ -366,6 +375,12 @@ function render(): void {
       .auto .status{color:#75c5d8}
       .auto .route{border-color:rgba(117,197,216,.5);box-shadow:inset 3px 0 #75c5d8}
       .mini.auto,.mini-docked.auto{--mini-accent:#75c5d8}
+      .suspect .status{color:#f4e45e}
+      .suspect .route{border-color:rgba(244,228,94,.55);box-shadow:inset 3px 0 #f4e45e}
+      .mini.suspect,.mini-docked.suspect{--mini-accent:#f4e45e}
+      .neutral .status{color:#f3f5ec}
+      .neutral .route{border-color:rgba(243,245,236,.5);box-shadow:inset 3px 0 #f3f5ec}
+      .mini.neutral,.mini-docked.neutral{--mini-accent:#f3f5ec}
       .mini.danger,.mini-docked.danger{--mini-accent:#f07868}
       .mini{width:148px;max-width:calc(100vw - 8px)}
       .mini-hit{display:grid;width:100%;padding:0;border:0;background:#10130f;color:inherit;text-align:center;cursor:pointer;font:inherit}
@@ -385,10 +400,30 @@ function render(): void {
   const compactOverlay = `${styles}<section class="probe compact ${copy.tone}" lang="${overlayLanguage}"><button id="expand" class="compact-hit" type="button" aria-label="${escapeHtml(t(language, 'overlay.expand'))}"><div class="route"><div class="model"><small>${escapeHtml(t(language, 'field.requested'))}</small><b>${escapeHtml(requestedModel)}</b></div><div class="arrow">→</div><div class="model"><small>${escapeHtml(t(language, 'field.responseRoute'))}</small><b>${escapeHtml(routeModel)}</b></div></div><div class="compact-pow"><span>${escapeHtml(t(language, 'pow.inline'))}</span><code>${escapeHtml(powRaw)}</code><span class="pow-divider">|</span><code>${escapeHtml(powDecimal)}</code></div></button></section>`;
   const miniOverlay = `${styles}<section class="probe mini ${copy.tone}" lang="${overlayLanguage}"><button id="mini-dock" class="mini-dock-hit" type="button" aria-label="${escapeHtml(t(language, 'overlay.dock'))}"></button><button id="expand" class="mini-hit" type="button" aria-label="${escapeHtml(t(language, 'overlay.expand'))}"><code class="mini-value">${escapeHtml(routeModel)}</code><span class="mini-divider" aria-hidden="true"></span><code class="mini-value">${escapeHtml(powDecimal)}</code></button></section>`;
   const dockedOverlay = `${styles}<section class="probe mini-docked ${copy.tone}" lang="${overlayLanguage}"><button id="mini-undock" class="mini-undock-hit" type="button" aria-label="${escapeHtml(t(language, 'overlay.undock'))}"></button></section>`;
-  const fullOverlay = `${styles}<section class="probe ${copy.tone}" lang="${overlayLanguage}"><header class="head"><div class="brand"><span class="radar"></span><div class="brand-copy"><div class="brand-line"><span class="title">Route Inspector</span><a class="author" href="${AUTHOR_LINK}" target="_blank" rel="noopener noreferrer">${AUTHOR_TEXT}</a></div></div></div><div class="head-tools"><span class="status">${escapeHtml(copy.label)}</span><button id="compact" class="icon-button" data-tooltip="${escapeHtml(t(language, 'overlay.compact'))}" aria-label="${escapeHtml(t(language, 'overlay.compact'))}"><span class="mode-icon compact-icon" aria-hidden="true"></span></button><button id="mini" class="icon-button" data-tooltip="${escapeHtml(t(language, 'overlay.mini'))}" aria-label="${escapeHtml(t(language, 'overlay.mini'))}"><span class="mode-icon mini-icon" aria-hidden="true"></span></button></div></header><div class="body"><div class="modes"><button id="mode-live" class="${mode === 'live' ? 'active' : ''}">${escapeHtml(t(language, 'mode.live'))}</button><button id="mode-reload" class="${mode === 'reload' ? 'active' : ''}">${escapeHtml(t(language, 'mode.reload'))}</button></div><p class="hint">${escapeHtml(hint)}</p><div class="route"><div class="model"><small>${escapeHtml(t(language, 'field.requested'))}</small><b>${escapeHtml(requestedModel)}</b></div><div class="arrow">→</div><div class="model"><small>${escapeHtml(t(language, 'field.responseRoute'))}</small><b>${escapeHtml(routeModel)}</b></div></div><div class="meta"><span>${escapeHtml(t(language, 'field.mode'))}</span><code>${escapeHtml(modeLabel(mode, language))}</code><span class="notice-source-label">${escapeHtml(t(language, 'field.route'))}${currentNoticeHint(language, mode)}</span><code>${escapeHtml(routeSource(turn, language))}</code><span>${escapeHtml(t(language, 'field.label'))}</span><code>${escapeHtml(labelValue(turn, language))}</code><span>${escapeHtml(t(language, 'field.labelSource'))}</span><code>${escapeHtml(labelSource(turn, language))}</code><span>${escapeHtml(t(language, 'field.adapter'))}</span><code>${escapeHtml(turn?.sources.join('+') ?? null)}</code></div><div class="full-pow"><span>${escapeHtml(t(language, 'pow.inline'))}</span><code>${escapeHtml(powInline)}</code></div><div class="actions"><button id="dashboard">${escapeHtml(t(language, 'button.dashboard'))}</button><button id="hide" class="hide">${escapeHtml(t(language, 'overlay.hide'))}</button></div></div></section>`;
+  const fullOverlay = `${styles}
+    <section class="probe ${copy.tone}" lang="${overlayLanguage}">
+      <header class="head">
+        <div class="brand"><span class="radar"></span><div class="brand-copy"><div class="brand-line"><span class="title">Route Inspector</span><a class="author" href="${AUTHOR_LINK}" target="_blank" rel="noopener noreferrer">${AUTHOR_TEXT}</a></div></div></div>
+        <div class="head-tools">${statusMarkup}<button id="compact" class="icon-button" data-tooltip="${escapeHtml(t(language, 'overlay.compact'))}" aria-label="${escapeHtml(t(language, 'overlay.compact'))}"><span class="mode-icon compact-icon" aria-hidden="true"></span></button><button id="mini" class="icon-button" data-tooltip="${escapeHtml(t(language, 'overlay.mini'))}" aria-label="${escapeHtml(t(language, 'overlay.mini'))}"><span class="mode-icon mini-icon" aria-hidden="true"></span></button></div>
+      </header>
+      <div class="body">
+        <div class="modes"><button id="mode-live" class="${mode === 'live' ? 'active' : ''}">${escapeHtml(t(language, 'mode.live'))}</button><button id="mode-reload" class="${mode === 'reload' ? 'active' : ''}">${escapeHtml(t(language, 'mode.reload'))}</button></div>
+        <p class="hint">${escapeHtml(hint)}</p>
+        <div class="route"><div class="model"><small>${escapeHtml(t(language, 'field.requested'))}</small><b>${escapeHtml(requestedModel)}</b></div><div class="arrow">→</div><div class="model"><small>${escapeHtml(t(language, 'field.responseRoute'))}</small><b>${escapeHtml(routeModel)}</b></div></div>
+        <div class="meta">
+          <span>${escapeHtml(t(language, 'field.mode'))}</span><code>${escapeHtml(modeLabel(mode, language))}</code>
+          <span>${escapeHtml(t(language, 'field.route'))}</span><code>${escapeHtml(routeSource(turn, language))}</code>
+          <span>${escapeHtml(t(language, 'field.label'))}</span><code>${escapeHtml(labelValue(turn, language))}</code>
+          <span>${escapeHtml(t(language, 'field.labelSource'))}</span><code>${escapeHtml(labelSource(turn, language))}</code>
+          <span>${escapeHtml(t(language, 'field.adapter'))}</span><code>${escapeHtml(turn?.sources.join('+') ?? null)}</code>
+        </div>
+        <div class="full-pow"><span>${escapeHtml(t(language, 'pow.inline'))}</span><code>${escapeHtml(powInline)}</code></div>
+        <div class="actions"><button id="dashboard">${escapeHtml(t(language, 'button.dashboard'))}</button><button id="hide" class="hide">${escapeHtml(t(language, 'overlay.hide'))}</button></div>
+      </div>
+    </section>`;
   root.innerHTML = overlayMode === 'docked' ? dockedOverlay : overlayMode === 'mini' ? miniOverlay : overlayMode === 'compact' ? compactOverlay : fullOverlay;
   root.getElementById('mode-live')?.addEventListener('click', () => void updateSettings({ captureMode: 'live' }));
-  bindNoticeHint(root);
+  bindSuspectedDowngradeHint(root);
   root.getElementById('mode-reload')?.addEventListener('click', () => void updateSettings({ captureMode: 'reload' }));
   root.getElementById('compact')?.addEventListener('click', () => void updateSettings({ overlayMode: 'compact', overlayMinimized: true, captureMode: 'live' }));
   root.getElementById('mini')?.addEventListener('click', () => void updateSettings({ overlayMode: 'mini', overlayMinimized: true, captureMode: 'live' }));

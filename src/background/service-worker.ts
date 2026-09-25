@@ -36,10 +36,15 @@ async function updateBadge(tabId: number | undefined, state: InspectorState): Pr
       ? 'OK'
       : latest?.verdict === 'auto_reasoning'
         ? 'AUTO'
+      : latest?.verdict === 'suspected_downgrade'
+        ? 'SUS'
+      : latest?.verdict === 'work_unverifiable'
+        ? 'WM'
       : latest?.phase === 'requested' || latest?.phase === 'responding'
         ? '…'
         : '?';
-  const color = text === '!' ? '#d95343' : text === 'OK' ? '#6fa92e' : text === 'AUTO' ? '#367c8c' : '#b47d2d';
+  const color = text === '!' ? '#d95343' : text === 'OK' ? '#6fa92e' : text === 'AUTO' ? '#367c8c'
+    : text === 'SUS' ? '#aa9929' : text === 'WM' ? '#545e52' : '#b47d2d';
   if (badgeTexts.get(tabId) === text) return;
   await chrome.action.setBadgeBackgroundColor({ tabId, color });
   await chrome.action.setBadgeText({ tabId, text });

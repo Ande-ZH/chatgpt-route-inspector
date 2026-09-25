@@ -1,12 +1,12 @@
 import { UPGRADE_NOTICE_PAGE, UPGRADE_NOTICE_VERSION } from '../shared/upgrade-notice';
 export { UPGRADE_NOTICE_PAGE, UPGRADE_NOTICE_VERSION } from '../shared/upgrade-notice';
-export const UPGRADE_NOTICE_KEY = 'routeInspectorNotice107Shown';
+export const UPGRADE_NOTICE_KEY = 'routeInspectorNotice108Shown';
 
 export function isNoticeUpgrade(current: string, details: chrome.runtime.InstalledDetails): boolean {
   if (current !== UPGRADE_NOTICE_VERSION || details.reason !== 'update' ||
     !details.previousVersion || !/^\d+(?:\.\d+){0,3}$/.test(details.previousVersion)) return false;
   const previous = details.previousVersion.split('.').map(Number);
-  const target = [1, 0, 7, 0];
+  const target = [1, 0, 8, 0];
   for (let index = 0; index < target.length; index++) {
     const value = previous[index] ?? 0;
     if (value !== target[index]) return value < target[index]!;
