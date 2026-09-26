@@ -1,3 +1,4 @@
+import { extensionApi } from '../shared/webextension';
 import { DEFAULT_SETTINGS, normalizeOverlayMode, type InspectorState, type PowObservation, type RouteObservation } from '../core/types';
 import { browserUiLanguage, normalizeUiLanguage } from '../core/language';
 import { migrateStoredTurn } from '../core/migration';
@@ -21,7 +22,7 @@ export function defaultState(): InspectorState {
 }
 
 async function loadState(): Promise<InspectorState> {
-  const stored = await chrome.storage.local.get(STORAGE_KEY);
+  const stored = await extensionApi.storage.local.get(STORAGE_KEY);
   const candidate = stored[STORAGE_KEY] as Partial<InspectorState> | undefined;
   if (!candidate) return defaultState();
   const turns = Array.isArray(candidate.turns)
@@ -101,7 +102,7 @@ export function mutateState(mutator: (state: InspectorState) => InspectorState |
     const updated = await mutator(current);
     if (updated === current) return current;
     const next = { ...updated, revision: (current.revision ?? 0) + 1 };
-    await chrome.storage.local.set({ [STORAGE_KEY]: next });
+    await extensionApi.storage.local.set({ [STORAGE_KEY]: next });
     cached = Promise.resolve(next);
     return next;
   });

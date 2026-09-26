@@ -1,3 +1,4 @@
+import { extensionApi } from '../shared/webextension';
 import { UPGRADE_NOTICE_PAGE, UPGRADE_NOTICE_VERSION } from '../shared/upgrade-notice';
 export { UPGRADE_NOTICE_PAGE, UPGRADE_NOTICE_VERSION } from '../shared/upgrade-notice';
 export const UPGRADE_NOTICE_KEY = 'routeInspectorNotice108Shown';
@@ -19,16 +20,16 @@ let opening: Promise<void> | null = null;
 /** This local marker intentionally lives outside clearable route history. */
 export async function handleInstallation(details: chrome.runtime.InstalledDetails): Promise<void> {
   if (details.reason === 'install') {
-    await chrome.tabs.create({ url: chrome.runtime.getURL('ui/onboarding/index.html') });
+    await extensionApi.tabs.create({ url: extensionApi.runtime.getURL('ui/onboarding/index.html') });
     return;
   }
-  if (!isNoticeUpgrade(chrome.runtime.getManifest().version, details)) return;
+  if (!isNoticeUpgrade(extensionApi.runtime.getManifest().version, details)) return;
   if (opening) return opening;
   opening = (async () => {
-    const stored = await chrome.storage.local.get(UPGRADE_NOTICE_KEY);
+    const stored = await extensionApi.storage.local.get(UPGRADE_NOTICE_KEY);
     if (stored[UPGRADE_NOTICE_KEY] === true) return;
-    await chrome.tabs.create({ url: chrome.runtime.getURL(UPGRADE_NOTICE_PAGE), active: true });
-    await chrome.storage.local.set({ [UPGRADE_NOTICE_KEY]: true });
+    await extensionApi.tabs.create({ url: extensionApi.runtime.getURL(UPGRADE_NOTICE_PAGE), active: true });
+    await extensionApi.storage.local.set({ [UPGRADE_NOTICE_KEY]: true });
   })();
   try { await opening; }
   finally { opening = null; }

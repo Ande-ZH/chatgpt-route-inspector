@@ -1,3 +1,4 @@
+import { extensionApi } from '../shared/webextension';
 import { clearState, invalidateCaptureContext, mutateState, readState, storeObservation, storePowObservation, storeCaptureContext } from './storage';
 import { displayTabId, supportedPageUrl } from '../core/page-scope';
 import { latestInContext, normalizeCaptureContext } from '../core/capture-context';
@@ -14,7 +15,7 @@ const badgeTexts = new Map<number, string>();
 
 async function currentTabPage(tabId: number): Promise<string | null> {
   try {
-    const tab = await chrome.tabs.get(tabId);
+    const tab = await extensionApi.tabs.get(tabId);
     return supportedPageUrl(tab.url, allowedOrigins);
   } catch { return null; }
 }
@@ -46,20 +47,20 @@ async function updateBadge(tabId: number | undefined, state: InspectorState): Pr
   const color = text === '!' ? '#d95343' : text === 'OK' ? '#6fa92e' : text === 'AUTO' ? '#367c8c'
     : text === 'SUS' ? '#aa9929' : text === 'WM' ? '#545e52' : '#b47d2d';
   if (badgeTexts.get(tabId) === text) return;
-  await chrome.action.setBadgeBackgroundColor({ tabId, color });
-  await chrome.action.setBadgeText({ tabId, text });
+  await extensionApi.action.setBadgeBackgroundColor({ tabId, color });
+  await extensionApi.action.setBadgeText({ tabId, text });
   badgeTexts.set(tabId, text);
 }
 
 async function broadcast(state: InspectorState): Promise<void> {
   const message = { type: 'route:state-changed', state };
   try {
-    await chrome.runtime.sendMessage(message);
+    await extensionApi.runtime.sendMessage(message);
   } catch {
     // No extension page is currently listening.
   }
   try {
-    const tabs = await chrome.tabs.query({});
+    const tabs = await extensionApi.tabs.query({});
     const openIds = new Set(tabs.map((tab) => tab.id));
     for (const tabId of badgeTexts.keys()) if (!openIds.has(tabId)) badgeTexts.delete(tabId);
     await Promise.allSettled(tabs.map(async (tab) => {
@@ -75,7 +76,7 @@ async function broadcast(state: InspectorState): Promise<void> {
       }
       await Promise.allSettled([
         updateBadge(tab.id, displayTabId(state, tab, allowedOrigins) === undefined ? { ...state, captureContexts: {} } : state),
-        chrome.tabs.sendMessage(tab.id, { ...message, state: stateForTab(state, tab.id) })
+        extensionApi.tabs.sendMessage(tab.id, { ...message, state: stateForTab(state, tab.id) })
       ]);
     }));
   } catch {
@@ -99,7 +100,7 @@ function refreshTabBadge(tabId: number): Promise<void> {
   // Navigation can change display eligibility without changing stored state.
   // Share the publication queue so an older broadcast cannot overwrite this refresh.
   const operation = publication.then(async () => {
-    const tab = await chrome.tabs.get(tabId);
+    const tab = await extensionApi.tabs.get(tabId);
     const state = await readState();
     await updateBadge(tabId, displayTabId(state, tab, allowedOrigins) === undefined
       ? { ...state, captureContexts: {} } : state);
@@ -122,11 +123,11 @@ async function acceptPowObservation(observation: PowObservation): Promise<Inspec
   return state;
 }
 
-chrome.runtime.onInstalled.addListener((details) => {
+extensionApi.runtime.onInstalled.addListener((details) => {
   void handleInstallation(details).catch((error: unknown) => console.error('Unable to open the extension welcome or update page.', error));
 });
 
-chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse: (response: RuntimeResponse) => void) => {
+extensionApi.runtime.onMessage.addListener((raw: unknown, sender, sendResponse: (response: RuntimeResponse) => void) => {
   const request = raw as RuntimeRequest;
   // Extension pages can also have sender.tab. Only content-script replies are tab projections.
   let contentTabId: number | undefined;
@@ -182,14 +183,14 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse: (respo
       return { ok: true, state };
     }
     if (request.type === 'route:open-dashboard') {
-      await chrome.tabs.create({ url: chrome.runtime.getURL('ui/dashboard/index.html') });
+      await extensionApi.tabs.create({ url: extensionApi.runtime.getURL('ui/dashboard/index.html') });
       return { ok: true };
     }
     if (request.type === 'route:open-announcement') {
-      if (chrome.runtime.getManifest().version !== UPGRADE_NOTICE_VERSION) {
+      if (extensionApi.runtime.getManifest().version !== UPGRADE_NOTICE_VERSION) {
         return { ok: false, error: 'This version notice is no longer available.' };
       }
-      await chrome.tabs.create({ url: chrome.runtime.getURL(UPGRADE_NOTICE_PAGE) });
+      await extensionApi.tabs.create({ url: extensionApi.runtime.getURL(UPGRADE_NOTICE_PAGE) });
       return { ok: true };
     }
     return { ok: false, error: '未知请求。' };
@@ -201,7 +202,7 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse: (respo
   return true;
 });
 
-chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
+extensionApi.tabs.onUpdated.addListener((tabId, change, tab) => {
   if (change.url === undefined && change.status === undefined) return;
   if (supportedPageUrl(tab.url, allowedOrigins)) {
     void refreshTabBadge(tabId).catch((error: unknown) => console.error('Could not refresh navigation badge.', error));
@@ -212,7 +213,7 @@ chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
     .catch((error: unknown) => console.error('Could not retire navigation context.', error));
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => {
+extensionApi.tabs.onRemoved.addListener((tabId) => {
   badgeTexts.delete(tabId);
   void mutateState((state) => {
     if (!state.captureContexts?.[tabId]) return state;
