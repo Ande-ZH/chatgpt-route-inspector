@@ -2,18 +2,21 @@
   "name": "chatgpt-route-inspector",
   "version": "1.0.8",
   "private": true,
-  "description": "Privacy-first Chromium extension that reports ChatGPT requested and server-reported resolved models.",
+  "description": "Privacy-first Firefox and Chromium extension that reports ChatGPT requested and server-reported resolved models.",
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
+    "build:firefox": "node scripts/build.mjs firefox",
     "build:e2e": "node scripts/build.mjs e2e",
+    "build:firefox:e2e": "node scripts/build.mjs firefox-e2e",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run --coverage",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
     "test:e2e": "npm run build:e2e && playwright test",
-    "package": "node scripts/package.mjs"
+    "package": "node scripts/package.mjs",
+    "package:firefox": "node scripts/package.mjs firefox"
   },
   "devDependencies": {
     "@eslint/js": "9.29.0",

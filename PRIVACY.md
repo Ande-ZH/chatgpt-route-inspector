@@ -2,7 +2,7 @@
 
 Effective date: August 11, 2026
 
-ChatGPT Route Inspector (the “Extension”) is a local model-route inspection tool for Chromium browsers. This policy explains how the Extension handles data.
+ChatGPT Route Inspector (the “Extension”) is a local model-route inspection tool for Firefox and Chromium browsers. This policy explains how the Extension handles data.
 
 ## Data handled
 

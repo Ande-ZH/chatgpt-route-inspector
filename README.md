@@ -12,7 +12,7 @@ Languages: [简体中文](README.md) · [English](README-en.md)
 
 ## 产品介绍
 
-ChatGPT Route Inspector 是一款适用于 Chromium 浏览器的 ChatGPT 模型路由检测扩展。它能够同时显示网页端发送的请求模型与服务器响应报告的路由模型，帮助用户核验 Pro 请求是否仍由 Pro 响应，或是否被路由到其他模型。
+ChatGPT Route Inspector 是一款适用于 Firefox 和 Chromium 浏览器的 ChatGPT 模型路由检测扩展。它能够同时显示网页端发送的请求模型与服务器响应报告的路由模型，帮助用户核验 Pro 请求是否仍由 Pro 响应，或是否被路由到其他模型。
 
 扩展直接读取请求与响应中可用的模型信息，不根据回答速度、写作风格、主观质量或模型自述推测结果。
 
@@ -58,7 +58,7 @@ ChatGPT Route Inspector 是一款适用于 Chromium 浏览器的 ChatGPT 模型�
 
 [在 Chrome 应用商店安装 ChatGPT 模型路由检测器](https://chromewebstore.google.com/detail/fbbnebcnkekjjmenncangmdhojamjcli)
 
-### 手动安装发布包
+### 在 Chrome / Chromium 中手动安装
 
 1. 从[最新 Release](https://github.com/Liu-Bot24/chatgpt-route-inspector/releases/latest) 下载并解压 `chatgpt-route-inspector-版本号.zip`。
 2. 打开 `chrome://extensions/`。
@@ -67,6 +67,13 @@ ChatGPT Route Inspector 是一款适用于 Chromium 浏览器的 ChatGPT 模型�
 5. 选择解压后的扩展目录。
 6. 刷新已经打开的 ChatGPT 页面。
 
+### 在 Firefox 中临时安装
+
+1. 运行下文的 `npm run build:firefox`，或解压名称以 `-firefox.zip` 结尾的 Firefox 构建包。Chrome 商店安装包及普通 Chromium 构建包不能用于 Firefox。
+2. 打开 `about:debugging#/runtime/this-firefox`，点击“临时载入附加组件”。
+3. 选择 `dist/firefox/manifest.json`（或解压后的 `manifest.json`）。
+4. 刷新已经打开的 ChatGPT 页面，打开扩展图标即可查看路由。临时附加组件会在 Firefox 退出后移除；普通 Firefox 稳定版的永久安装需要已签名的附加组件。
+
 ### 从源码构建
 
 需要 Node.js 20 或更高版本。
@@ -74,9 +81,13 @@ ChatGPT Route Inspector 是一款适用于 Chromium 浏览器的 ChatGPT 模型�
 ```powershell
 npm ci
 npm run build
+npm run build:firefox
+npm run typecheck
+npm run lint
+npm test
 ```
 
-构建后的扩展位于 `dist/extension`。在 `chrome://extensions/` 中选择“加载已解压的扩展程序”，然后选择该目录。
+Chromium 构建产物位于 `dist/extension`，Firefox 构建产物位于 `dist/firefox`。前者在 `chrome://extensions/` 中选择“加载已解压的扩展程序”并选中该目录；后者在 Firefox 中按上文临时安装。`npm run package` 和 `npm run package:firefox` 分别生成 Chromium 和 Firefox 的 ZIP 包及 SHA-256 校验文件。
 
 ## 使用方法
 
@@ -143,6 +154,7 @@ npm run build
 ## 兼容性与限制
 
 - 支持 Chrome 111 及更高版本，以及其他兼容 Manifest V3 的 Chromium 浏览器。
+- 支持 Firefox 桌面版 142 及更高版本；Firefox 使用 MV3 事件后台页，Chromium 使用 MV3 service worker。
 - 扩展只观察并显示信息，不会修改 ChatGPT 请求、响应、模型选择、账号权限或用量限制。
 - 可显示的内容取决于 ChatGPT 网页响应中实际提供的信息；网站结构更新后，部分信息可能暂时无法读取。
 - PoW 难度仅作为原始数值展示，不代表 OpenAI 官方的账号状态或风险结论。
@@ -155,6 +167,8 @@ npm run lint
 npm test
 npm run test:e2e
 npm run package
+npm run build:firefox:e2e
+npm run package:firefox
 ```
 
 发布包与 SHA-256 校验文件输出到 `release/`。

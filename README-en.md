@@ -12,7 +12,7 @@ Languages: [简体中文](README.md) · [English](README-en.md)
 
 ## Overview
 
-ChatGPT Route Inspector is a model-route inspection extension for Chromium browsers. It shows both the model requested by the ChatGPT web client and the route model reported by the server response, helping users verify whether a Pro request remained on Pro or was routed to another model.
+ChatGPT Route Inspector is a model-route inspection extension for Firefox and Chromium browsers. It shows both the model requested by the ChatGPT web client and the route model reported by the server response, helping users verify whether a Pro request remained on Pro or was routed to another model.
 
 The extension reads available model information directly from requests and responses. It does not infer results from response speed, writing style, subjective quality, or model self-identification.
 
@@ -58,7 +58,7 @@ The following example shows a request for `GPT 5.6 Pro` with a response route of
 
 [Install ChatGPT Model Route Inspector from the Chrome Web Store](https://chromewebstore.google.com/detail/fbbnebcnkekjjmenncangmdhojamjcli)
 
-### Install a release package manually
+### Install manually in Chrome / Chromium
 
 1. Download and extract `chatgpt-route-inspector-VERSION.zip` from the [latest release](https://github.com/Liu-Bot24/chatgpt-route-inspector/releases/latest).
 2. Open `chrome://extensions/`.
@@ -67,6 +67,13 @@ The following example shows a request for `GPT 5.6 Pro` with a response route of
 5. Select the extracted extension directory.
 6. Reload any ChatGPT pages that were already open.
 
+### Install temporarily in Firefox
+
+1. Run `npm run build:firefox` below, or extract a Firefox package ending in `-firefox.zip`. The Chrome Web Store package and standard Chromium build cannot be loaded in Firefox.
+2. Open `about:debugging#/runtime/this-firefox` and click **Load Temporary Add-on**.
+3. Select `dist/firefox/manifest.json` (or the extracted `manifest.json`).
+4. Reload any open ChatGPT pages and open the extension icon to inspect routes. Firefox removes temporary add-ons when it exits; permanent installation in stable Firefox requires a signed add-on.
+
 ### Build from source
 
 Node.js 20 or newer is required.
@@ -74,9 +81,13 @@ Node.js 20 or newer is required.
 ```powershell
 npm ci
 npm run build
+npm run build:firefox
+npm run typecheck
+npm run lint
+npm test
 ```
 
-The unpacked extension is written to `dist/extension`. Open `chrome://extensions/`, choose **Load unpacked**, and select that directory.
+The Chromium build is written to `dist/extension`, and the Firefox build to `dist/firefox`. Load the former via **Load unpacked** at `chrome://extensions/`, or load the latter temporarily in Firefox as above. `npm run package` and `npm run package:firefox` create the corresponding ZIP archives and SHA-256 checksums.
 
 ## Usage
 
@@ -143,6 +154,7 @@ The extension does not request the `debugger` permission and does not monitor un
 ## Compatibility and limitations
 
 - Supports Chrome 111 or newer and other Chromium browsers compatible with Manifest V3.
+- Supports Firefox desktop 142 or newer; Firefox uses a Manifest V3 event background page, while Chromium uses a Manifest V3 service worker.
 - The extension observes and displays information only. It does not modify ChatGPT requests, responses, model selection, account entitlements, or usage limits.
 - Available information depends on what the ChatGPT web response provides. Website changes may temporarily affect recognition.
 - PoW difficulty is displayed as a raw value only and is not an official OpenAI account-status or risk assessment.
@@ -155,6 +167,8 @@ npm run lint
 npm test
 npm run test:e2e
 npm run package
+npm run build:firefox:e2e
+npm run package:firefox
 ```
 
 Release archives and SHA-256 checksum files are written to `release/`.
