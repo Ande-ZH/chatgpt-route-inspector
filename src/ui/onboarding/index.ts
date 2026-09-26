@@ -1,3 +1,4 @@
+import { extensionApi } from '../../shared/webextension';
 import type { InspectorState } from '../../core/types';
 import { getState, send, subscribe } from '../shared/client';
 import { applyStaticTranslations, bindLanguageSwitch } from '../shared/i18n';
@@ -14,8 +15,8 @@ bindLanguageSwitch(async (uiLanguage) => {
   const response = await send({ type: 'route:update-settings', settings: { uiLanguage } });
   if (response.state) render(response.state);
 });
-document.querySelector('#dashboard')?.addEventListener('click', () => void chrome.tabs.create({ url: chrome.runtime.getURL('ui/dashboard/index.html') }));
-document.querySelector('#options')?.addEventListener('click', () => void chrome.runtime.openOptionsPage());
+document.querySelector('#dashboard')?.addEventListener('click', () => void extensionApi.tabs.create({ url: extensionApi.runtime.getURL('ui/dashboard/index.html') }));
+document.querySelector('#options')?.addEventListener('click', () => void extensionApi.runtime.openOptionsPage());
 
 void getState().then((initial) => {
   render(initial);
