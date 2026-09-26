@@ -1,3 +1,4 @@
+import { extensionApi } from '../shared/webextension';
 import type { CaptureContext, CaptureMode, InspectorState, RouteTurn, UiLanguage } from '../core/types';
 import { hasResponseEvidence, latestInContext, newerContext, normalizeCaptureContext } from '../core/capture-context';
 import { conversationIdFromPathname } from '../core/chatgpt-path';
@@ -82,7 +83,7 @@ let stateRetryDelay = 250;
 async function initializeState(): Promise<void> {
   while (true) {
     try {
-      const response = await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({ type: 'route:get-state' });
+      const response = await extensionApi.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({ type: 'route:get-state' });
       if (response.ok && response.state && Number.isInteger(response.tabId)) {
         ownTabId = response.tabId!;
         acceptState(response.state);
@@ -109,7 +110,7 @@ async function syncContext(): Promise<void> {
   await stateReady;
   const next = pendingContext;
   try {
-    const response = await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({ type: 'route:context', context: next });
+    const response = await extensionApi.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({ type: 'route:context', context: next });
     if (response.ok) {
       if (pendingContext === next) pendingContext = null;
       contextRetryDelay = 250;
@@ -205,7 +206,7 @@ async function scanReloadDom(): Promise<void> {
 
       const observedAt = new Date().toISOString();
       try {
-        const response = await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({
+        const response = await extensionApi.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({
           type: 'route:observation',
           observation: {
             captureId: crypto.randomUUID(),
@@ -245,7 +246,7 @@ function scheduleReloadDomScan(): void {
 }
 
 async function updateSettings(settings: Partial<InspectorState['settings']>): Promise<void> {
-  const response = await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({
+  const response = await extensionApi.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({
     type: 'route:update-settings',
     settings
   });
@@ -432,7 +433,7 @@ function render(): void {
   root.getElementById('expand')?.addEventListener('click', () => void updateSettings({ overlayMode: 'full', overlayMinimized: false }));
   root.getElementById('hide')?.addEventListener('click', () => void updateSettings({ overlayEnabled: false }));
   root.getElementById('dashboard')?.addEventListener('click', () => {
-    void chrome.runtime.sendMessage<RuntimeRequest>({ type: 'route:open-dashboard' });
+    void extensionApi.runtime.sendMessage<RuntimeRequest>({ type: 'route:open-dashboard' });
   });
 }
 
@@ -464,14 +465,14 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
   void stateReady.then(async () => {
     if (generation !== captureGeneration || !state?.settings.autoCaptureEnabled || ownTabId === null) return;
     if ('pow' in envelope) {
-      const response = await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({
+      const response = await extensionApi.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({
         type: 'pow:observation',
         observation: envelope.pow
       });
       if (response.ok && response.state) acceptState(response.state);
       return;
     }
-    const response = await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({
+    const response = await extensionApi.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({
       type: 'route:observation',
       observation: envelope.observation
     });
@@ -479,7 +480,7 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
   }).catch(() => undefined).finally(() => { waitingObservations--; });
 });
 
-chrome.runtime.onMessage.addListener((message: unknown) => {
+extensionApi.runtime.onMessage.addListener((message: unknown) => {
   if (!message || typeof message !== 'object') return;
   const record = message as Record<string, unknown>;
   if (record.type !== 'route:state-changed' || !record.state) return;
