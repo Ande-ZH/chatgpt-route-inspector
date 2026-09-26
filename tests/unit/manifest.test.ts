@@ -13,6 +13,8 @@ function manifest() {
     description: string;
     icons: Record<string, string>;
     action: { default_icon: Record<string, string> };
+    background: { service_worker: string; scripts: string[] };
+    browser_specific_settings: { gecko: { id: string; strict_min_version: string; data_collection_permissions: { required: string[] } } };
   };
 }
 
@@ -39,6 +41,9 @@ describe('extension permissions', () => {
     expect(value.permissions).not.toContain('debugger');
     expect(value.host_permissions).toEqual(['https://chatgpt.com/*', 'https://chat.openai.com/*']);
     expect(value.content_scripts.map((script) => script.world)).toEqual(['MAIN', 'ISOLATED']);
+    expect(value.background.scripts).toEqual([value.background.service_worker]);
+    expect(value.browser_specific_settings.gecko.strict_min_version).toBe('142.0');
+    expect(value.browser_specific_settings.gecko.data_collection_permissions.required).toEqual(['none']);
     expect(value.default_locale).toBe('en');
     expect(value.name).toBe('__MSG_extensionName__');
     expect(value.description).toBe('__MSG_extensionDescription__');
