@@ -1,3 +1,4 @@
+import { extensionApi } from '../../shared/webextension';
 import { buildMarkdownReport } from '../../core/privacy';
 import { displayTabId } from '../../core/page-scope';
 import { isStaleState } from '../../core/state';
@@ -144,7 +145,7 @@ document.querySelectorAll<HTMLButtonElement>('[data-overlay]').forEach((button) 
   void setOverlayEnabled(button.dataset.overlay === 'show');
 }));
 document.querySelector('#dashboard')?.addEventListener('click', () => void send({ type: 'route:open-dashboard' }));
-document.querySelector('#options')?.addEventListener('click', () => void chrome.runtime.openOptionsPage());
+document.querySelector('#options')?.addEventListener('click', () => void extensionApi.runtime.openOptionsPage());
 document.querySelector('#copy')?.addEventListener('click', async () => {
   const turn = latestForTab(state, displayTabId(state, activeTab, allowedOrigins), state.settings.captureMode);
   if (!turn) return showFeedback('status.noRecord', 'amber');
@@ -153,9 +154,9 @@ document.querySelector('#copy')?.addEventListener('click', async () => {
 });
 
 void (async () => {
-  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tabs = await extensionApi.tabs.query({ active: true, currentWindow: true });
   activeTab = tabs[0];
-  chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
+  extensionApi.tabs.onUpdated.addListener((tabId, change, tab) => {
     if (change.url === undefined && change.status === undefined) return;
     if (tabId !== activeTab?.id) return;
     activeTab = tab;
