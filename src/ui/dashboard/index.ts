@@ -1,3 +1,4 @@
+import { extensionApi } from '../../shared/webextension';
 import { buildMarkdownReport, sanitizedExport } from '../../core/privacy';
 import { isStaleState } from '../../core/state';
 import type { CaptureMode, InspectorState, RouteTurn, RouteVerdict, UiLanguage } from '../../core/types';
@@ -36,7 +37,7 @@ const evidenceFieldHints: Partial<Record<TranslationKey, string>> = {
 
 const versionLabel = document.querySelector<HTMLElement>('#dashboard-version');
 if (versionLabel) {
-  const version = chrome.runtime.getManifest().version;
+  const version = extensionApi.runtime.getManifest().version;
   versionLabel.textContent = `v${version}`;
 }
 
