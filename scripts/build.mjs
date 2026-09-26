@@ -5,7 +5,7 @@ import { build } from 'esbuild';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const requestedTarget = process.argv[2] ?? 'extension';
-const validTargets = new Set(['extension', 'e2e']);
+const validTargets = new Set(['extension', 'firefox', 'e2e', 'firefox-e2e']);
 
 if (!validTargets.has(requestedTarget)) {
   throw new Error(`Unknown build target: ${requestedTarget}`);
@@ -31,8 +31,10 @@ async function copy(source, target) {
 }
 
 async function buildTarget(target) {
+  const isFirefox = target.startsWith('firefox');
+  const isE2e = target.endsWith('e2e');
   const outdir = path.join(root, 'dist', target);
-  const allowedOrigins = target === 'e2e'
+  const allowedOrigins = isE2e
     ? ['https://chatgpt.com', 'https://chat.openai.com', 'http://127.0.0.1:43996']
     : ['https://chatgpt.com', 'https://chat.openai.com'];
   const define = {
@@ -46,7 +48,9 @@ async function buildTarget(target) {
     ...commonBuild,
     entryPoints: { 'background/service-worker': 'src/background/service-worker.ts' },
     outdir,
-    format: 'esm',
+    // Firefox MV3 runs an event page script; Chromium MV3 runs an ES module service worker.
+    format: isFirefox ? 'iife' : 'esm',
+    target: isFirefox ? 'firefox142' : 'chrome111',
     define
   });
 
@@ -59,6 +63,7 @@ async function buildTarget(target) {
     },
     outdir,
     format: 'iife',
+    target: isFirefox ? 'firefox142' : 'chrome111',
     define
   });
 
@@ -71,7 +76,17 @@ async function buildTarget(target) {
   await cp(path.join(root, 'icons'), path.join(outdir, 'icons'), { recursive: true });
 
   const manifest = JSON.parse(await readFile(path.join(root, 'manifest', 'manifest.json'), 'utf8'));
-  if (target === 'e2e') {
+  if (isFirefox) {
+    // Firefox does not run extension service workers in MV3.
+    delete manifest.background.service_worker;
+    delete manifest.background.type;
+    delete manifest.minimum_chrome_version;
+  } else {
+    // Chromium rejects background.scripts in MV3 and does not use Gecko metadata.
+    delete manifest.background.scripts;
+    delete manifest.browser_specific_settings;
+  }
+  if (isE2e) {
     manifest.name = 'ChatGPT Route Inspector — E2E';
     manifest.host_permissions.push('http://127.0.0.1/*');
     for (const contentScript of manifest.content_scripts) contentScript.matches.push('http://127.0.0.1/*');
