@@ -1,3 +1,4 @@
+import { extensionApi } from '../../shared/webextension';
 import type { UiLanguage } from '../../core/types';
 import type { RuntimeRequest, RuntimeResponse } from '../../shared/messages';
 import { UPGRADE_NOTICE_PAGE } from '../../shared/upgrade-notice';
@@ -22,7 +23,7 @@ export function suspectedDowngradeHintMarkup(language: UiLanguage, url: string):
 }
 
 export function currentSuspectedDowngradeHint(language: UiLanguage): string {
-  return suspectedDowngradeHintMarkup(language, chrome.runtime.getURL(UPGRADE_NOTICE_PAGE));
+  return suspectedDowngradeHintMarkup(language, extensionApi.runtime.getURL(UPGRADE_NOTICE_PAGE));
 }
 
 export function bindSuspectedDowngradeHint(root: ShadowRoot): void {
@@ -42,7 +43,7 @@ export function bindSuspectedDowngradeHint(root: ShadowRoot): void {
     event.preventDefault();
     // Content pages cannot navigate directly to a private extension page.
     try {
-      const response = await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({ type: 'route:open-announcement' });
+      const response = await extensionApi.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({ type: 'route:open-announcement' });
       if (!response.ok) throw new Error(response.error);
     } catch {
       root.getElementById('suspect-error')?.removeAttribute('hidden');

@@ -1,3 +1,4 @@
+import { extensionApi } from '../../shared/webextension';
 import type { CaptureMode, InspectorState, PowReading, RouteTurn, RouteVerdict, UiLanguage } from '../../core/types';
 import { latestInContext } from '../../core/capture-context';
 import type { RuntimeRequest, RuntimeResponse } from '../../shared/messages';
@@ -5,7 +6,7 @@ import { t } from './i18n';
 
 export async function send(request: RuntimeRequest): Promise<RuntimeResponse> {
   try {
-    const response = await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>(request);
+    const response = await extensionApi.runtime.sendMessage<RuntimeRequest, RuntimeResponse>(request);
     if (!response.ok) throw new Error(response.error ?? 'The extension could not complete this action.');
     document.getElementById('route-operation-error')?.remove();
     return response;
@@ -180,7 +181,7 @@ export function formatDuration(value: number | null): string {
 }
 
 export function subscribe(handler: (state: InspectorState) => void): void {
-  chrome.runtime.onMessage.addListener((message: unknown) => {
+  extensionApi.runtime.onMessage.addListener((message: unknown) => {
     if (!message || typeof message !== 'object') return;
     const record = message as Record<string, unknown>;
     if (record.type === 'route:state-changed' && record.state) handler(record.state as InspectorState);
